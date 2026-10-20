@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 0 84% 52%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 45 100% 95%;
+    --secondary-foreground: 22 64% 16%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 153 100% 23%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --warning: 45 100% 48%;
+    --warning-foreground: 0 0% 100%;
+    --success: 153 100% 23%;
+    --success-foreground: 0 0% 100%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 0 84% 52%;
+    --radius: 0.625rem;
+    --chart-1: 0 84% 52%;
+    --chart-2: 153 100% 23%;
+    --chart-3: 45 100% 48%;
+    --chart-4: 0 84% 60%;
+    --chart-5: 262 83% 58%;
+  }
+
+  .dark {
+    --background: 222 47% 8%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 11%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 47% 11%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 0 84% 52%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 153 100% 23%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 0 0% 98%;
+    --warning: 45 100% 48%;
+    --warning-foreground: 0 0% 100%;
+    --success: 153 100% 23%;
+    --success-foreground: 0 0% 100%;
+    --border: 217 33% 20%;
+    --input: 217 33% 20%;
+    --ring: 0 84% 52%;
+    --chart-1: 0 84% 52%;
+    --chart-2: 153 100% 23%;
+    --chart-3: 45 100% 48%;
+    --chart-4: 0 84% 60%;
+    --chart-5: 262 83% 58%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+@layer utilities {
+  .animate-fade-in {
+    animation: fadeIn 0.4s ease-out;
+  }
+  .animate-slide-up {
+    animation: slideUp 0.5s ease-out;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .gradient-mesh {
+    background-image: radial-gradient(circle at 20% 50%, hsl(0 84% 52% / 0.08) 0%, transparent 50%),
+                      radial-gradient(circle at 80% 80%, hsl(153 100% 23% / 0.08) 0%, transparent 50%),
+                      radial-gradient(circle at 40% 20%, hsl(45 100% 48% / 0.08) 0%, transparent 50%);
+  }
+}

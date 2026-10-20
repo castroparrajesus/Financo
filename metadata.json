@@ -1,0 +1,7 @@
+{
+  "name": "Financo",
+  "description": "Conciliación automatizada de pagos para contadores en Colombia",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
