@@ -336,3 +336,196 @@ export function exportToPDF(
   const cleanName = realCompanyName.replace(/[^\w\s-]/gi, '').replace(/\s+/g, '_');
   doc.save(`cedula_conciliacion_${cleanName}_${formatDate(recon.created_at.split('T')[0])}.pdf`);
 }
+
+/**
+ * Genera la plantilla de asientos contables de ajuste para importar en Siigo / World Office / Helisa
+ * a partir de las excepciones bancarias pendientes de registro (GMF 4x1000, comisiones, compras tarjeta, retiros).
+ */
+export function exportAccountingVouchers(
+  matches: MatchRow[],
+  recon: Reconciliation,
+  companyName: string
+) {
+  const wb = XLSX.utils.book_new();
+  const meta: ReconciliationMetadata = recon.metadata || {};
+  const realCompanyName = meta.companyName || companyName;
+  const nit = meta.companyNit || '901883418-1';
+  const period = meta.period || 'Enero 2026';
+  const bankAccount = meta.ledgerAccount?.split(' ')[0] || '11100501';
+  const bankAccountName = meta.ledgerAccount || 'Bancolombia Cuenta Corriente';
+
+  // Filtrar partidas bancarias que no están en el libro contable
+  const bankExceptions = matches.filter(
+    (m) =>
+      (m.exception_type === 'banco_sin_libro' || (m.status === 'exception' && m.bank_amount !== null && m.ledger_amount === null)) &&
+      m.bank_amount !== null
+  );
+
+  const getPucClassification = (concept: string, amount: number) => {
+    const upper = (concept || '').toUpperCase();
+    const isIncome = amount > 0;
+
+    if (upper.includes('4X1000') || upper.includes('GMF') || upper.includes('GRAVAMEN')) {
+      return {
+        expenseCode: '511595',
+        expenseName: 'Gravamen a los Movimientos Financieros (4x1000)',
+        terceroNit: '800197268', // DIAN
+        terceroNombre: 'DIAN DIRECCION DE IMPUESTOS Y ADUANAS NACIONALES',
+        docType: 'NC', // Nota de Contabilidad
+      };
+    }
+    if (upper.includes('INTERES') || upper.includes('RENDIMIENTO') || isIncome) {
+      return {
+        expenseCode: '421005',
+        expenseName: 'Rendimientos Financieros de Depósitos Bancarios',
+        terceroNit: '890903938', // Bancolombia / Banco
+        terceroNombre: 'ENTIDAD BANCARIA',
+        docType: 'NC',
+      };
+    }
+    if (upper.includes('CUOTA DE MANEJO') || upper.includes('COMISION') || upper.includes('IVA COMISION')) {
+      return {
+        expenseCode: '530515',
+        expenseName: 'Gastos y Comisiones Bancarias',
+        terceroNit: '890903938',
+        terceroNombre: 'ENTIDAD BANCARIA',
+        docType: 'NC',
+      };
+    }
+    if (upper.includes('EDS') || upper.includes('TERPEL') || upper.includes('TEXACO') || upper.includes('BIOMAX') || upper.includes('PRIMAX') || upper.includes('GASOLINA')) {
+      return {
+        expenseCode: '513535',
+        expenseName: 'Servicios - Combustibles y Lubricantes',
+        terceroNit: '900000000',
+        terceroNombre: concept,
+        docType: 'CE', // Comprobante de Egreso
+      };
+    }
+    if (upper.includes('RETIRO CAJERO') || upper.includes('RETIRO EFECTIVO')) {
+      return {
+        expenseCode: '136505',
+        expenseName: 'Cuentas por Cobrar a Socios / Anticipos para Gastos',
+        terceroNit: nit,
+        terceroNombre: 'RETIRO CAJERO POR LEGALIZAR',
+        docType: 'CE',
+      };
+    }
+    if (upper.includes('GOOGLE') || upper.includes('POPPO') || upper.includes('MICO') || upper.includes('FACEBOOK') || upper.includes('SOFTWARE')) {
+      return {
+        expenseCode: '513550',
+        expenseName: 'Servicios Informáticos y Licencias Digitales',
+        terceroNit: '900000000',
+        terceroNombre: concept,
+        docType: 'CE',
+      };
+    }
+    if (upper.includes('SUPERTIEND') || upper.includes('EXITO') || upper.includes('OLIMPICA') || upper.includes('JUMBO') || upper.includes('HOMECENTER') || upper.includes('MAKRO')) {
+      return {
+        expenseCode: '519525',
+        expenseName: 'Elementos de Aseo, Cafetería y Suministros',
+        terceroNit: '900000000',
+        terceroNombre: concept,
+        docType: 'CE',
+      };
+    }
+
+    return {
+      expenseCode: '519595',
+      expenseName: 'Otros Gastos Operacionales Diversos',
+      terceroNit: '900000000',
+      terceroNombre: concept,
+      docType: 'CE',
+    };
+  };
+
+  // 1. Hoja Detallada de Asientos de Partida Doble
+  const doubleEntryRows: Record<string, unknown>[] = [];
+  let consecutivo = 1;
+
+  bankExceptions.forEach((m) => {
+    const rawVal = m.bank_amount ?? 0;
+    const absVal = Math.abs(rawVal);
+    const isIncome = rawVal > 0;
+    const classification = getPucClassification(m.bank_name || '', rawVal);
+    const dateFormatted = m.bank_date ? formatDate(m.bank_date) : '';
+
+    if (isIncome) {
+      // Rendimiento: Débito a Banco, Crédito a Ingresos 421005
+      doubleEntryRows.push({
+        'Comprobante': `NC-${String(consecutivo).padStart(3, '0')}`,
+        'Fecha': dateFormatted,
+        'Cuenta Contable': bankAccount,
+        'Nombre Cuenta': bankAccountName,
+        'NIT Tercero': classification.terceroNit,
+        'Nombre Tercero': classification.terceroNombre,
+        'Concepto': m.bank_name || 'Rendimiento bancario',
+        'Débito': absVal,
+        'Crédito': 0,
+        'Referencia Banco': m.bank_reference || m.bank_id || '',
+      });
+      doubleEntryRows.push({
+        'Comprobante': `NC-${String(consecutivo).padStart(3, '0')}`,
+        'Fecha': dateFormatted,
+        'Cuenta Contable': classification.expenseCode,
+        'Nombre Cuenta': classification.expenseName,
+        'NIT Tercero': classification.terceroNit,
+        'Nombre Tercero': classification.terceroNombre,
+        'Concepto': m.bank_name || 'Rendimiento bancario',
+        'Débito': 0,
+        'Crédito': absVal,
+        'Referencia Banco': m.bank_reference || m.bank_id || '',
+      });
+    } else {
+      // Egreso / Gasto: Débito a Cuenta de Gasto, Crédito a Banco
+      doubleEntryRows.push({
+        'Comprobante': `${classification.docType}-${String(consecutivo).padStart(3, '0')}`,
+        'Fecha': dateFormatted,
+        'Cuenta Contable': classification.expenseCode,
+        'Nombre Cuenta': classification.expenseName,
+        'NIT Tercero': classification.terceroNit,
+        'Nombre Tercero': classification.terceroNombre,
+        'Concepto': m.bank_name || 'Gasto o pago bancario',
+        'Débito': absVal,
+        'Crédito': 0,
+        'Referencia Banco': m.bank_reference || m.bank_id || '',
+      });
+      doubleEntryRows.push({
+        'Comprobante': `${classification.docType}-${String(consecutivo).padStart(3, '0')}`,
+        'Fecha': dateFormatted,
+        'Cuenta Contable': bankAccount,
+        'Nombre Cuenta': bankAccountName,
+        'NIT Tercero': classification.terceroNit,
+        'Nombre Tercero': classification.terceroNombre,
+        'Concepto': m.bank_name || 'Gasto o pago bancario',
+        'Débito': 0,
+        'Crédito': absVal,
+        'Referencia Banco': m.bank_reference || m.bank_id || '',
+      });
+    }
+    consecutivo++;
+  });
+
+  const wsDouble = XLSX.utils.json_to_sheet(doubleEntryRows);
+  XLSX.utils.book_append_sheet(wb, wsDouble, 'Asientos_Partida_Doble');
+
+  // 2. Hoja Formato Plano Siigo / World Office / ERP
+  const siigoRows = doubleEntryRows.map((r, idx) => ({
+    'Tipo_Comprobante': (r['Comprobante'] as string).split('-')[0],
+    'Consecutivo': (r['Comprobante'] as string).split('-')[1],
+    'Secuencia': idx + 1,
+    'Fecha': r['Fecha'],
+    'Cuenta_Contable': r['Cuenta Contable'],
+    'Identificacion_Tercero': r['NIT Tercero'],
+    'Descripcion_Movimiento': r['Concepto'],
+    'Valor_Debito': r['Débito'],
+    'Valor_Credito': r['Crédito'],
+    'Documento_Referencia': r['Referencia Banco'],
+    'Base_Retencion': 0,
+  }));
+
+  const wsSiigo = XLSX.utils.json_to_sheet(siigoRows);
+  XLSX.utils.book_append_sheet(wb, wsSiigo, 'Formato_Plano_Siigo_ERP');
+
+  const cleanName = realCompanyName.replace(/[^\w\s-]/gi, '').replace(/\s+/g, '_');
+  XLSX.writeFile(wb, `asientos_ajuste_contable_${cleanName}_${period}.xlsx`);
+}

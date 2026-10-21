@@ -21,10 +21,15 @@ export default function SignupPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<UserRole>('accountant');
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!acceptedTerms) {
+      toast.error('Debes autorizar el tratamiento de datos personales (Ley 1581) para continuar.');
+      return;
+    }
     if (password.length < 6) {
       toast.error('La contraseña debe tener al menos 6 caracteres');
       return;
@@ -123,6 +128,27 @@ export default function SignupPage() {
                     required
                   />
                 </div>
+              </div>
+
+              <div className="flex items-start gap-2.5 pt-1">
+                <input
+                  type="checkbox"
+                  id="habeas-data"
+                  checked={acceptedTerms}
+                  onChange={(e) => setAcceptedTerms(e.target.checked)}
+                  className="mt-1 h-4 w-4 rounded border-border text-primary focus:ring-primary"
+                  required
+                />
+                <label htmlFor="habeas-data" className="text-xs text-muted-foreground leading-snug cursor-pointer select-none">
+                  Autorizo el tratamiento de mis datos personales según la <strong>Ley 1581 de 2012</strong> (Habeas Data) y acepto la{' '}
+                  <Link href="/privacidad" target="_blank" className="text-primary hover:underline font-medium">
+                    Política de Privacidad
+                  </Link>{' '}
+                  y{' '}
+                  <Link href="/terminos" target="_blank" className="text-primary hover:underline font-medium">
+                    Términos de Servicio
+                  </Link>.
+                </label>
               </div>
 
               <Button type="submit" className="w-full h-10 font-semibold" disabled={loading}>

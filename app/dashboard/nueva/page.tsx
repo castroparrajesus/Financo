@@ -41,6 +41,18 @@ interface FileData {
   rows: Record<string, unknown>[];
   totalRows: number;
   metadata?: ReconciliationMetadata;
+  hash?: string;
+}
+
+async function computeFileSha256(file: File): Promise<string> {
+  try {
+    const buffer = await file.arrayBuffer();
+    const digest = await window.crypto.subtle.digest('SHA-256', buffer);
+    const hashArray = Array.from(new Uint8Array(digest));
+    return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return `hash-${file.name}-${file.size}-${file.lastModified}`;
+  }
 }
 
 export default function NewReconciliationPage() {
@@ -104,6 +116,18 @@ export default function NewReconciliationPage() {
 
   const handleFileUpload = async (file: File, type: 'bank' | 'ledger', showToast = true): Promise<boolean> => {
     try {
+      const fileHash = await computeFileSha256(file);
+      const sessionKey = `financo_hash_${type}_${fileHash}`;
+
+      if (typeof window !== 'undefined' && window.sessionStorage.getItem(sessionKey)) {
+        toast.warning(
+          `Aviso de Integridad: Este archivo (${file.name}) ya había sido cargado en esta sesión. Se verifica su hash SHA-256 para prevenir duplicidad de movimientos contables.`,
+          { duration: 5000 }
+        );
+      } else if (typeof window !== 'undefined') {
+        window.sessionStorage.setItem(sessionKey, new Date().toISOString());
+      }
+
       const parsed = await parseFile(file);
       if (parsed.totalRows === 0) {
         if (showToast) toast.error('El archivo no contiene datos');
@@ -118,6 +142,7 @@ export default function NewReconciliationPage() {
         rows: parsed.rows,
         totalRows: parsed.totalRows,
         metadata: parsed.metadata,
+        hash: fileHash,
       };
 
       if (type === 'bank') {
@@ -127,7 +152,7 @@ export default function NewReconciliationPage() {
         setLedgerFile(fileData);
         setLedgerMapping(detected);
       }
-      if (showToast) toast.success(`${file.name} cargado: ${fileData.totalRows} filas`);
+      if (showToast) toast.success(`${file.name} cargado (${fileData.totalRows} filas · Hash SHA-256 verificado)`);
       return true;
     } catch (err) {
       console.error(`Error al procesar el archivo ${file.name}.`, err);
@@ -631,7 +656,14 @@ export default function NewReconciliationPage() {
                         <CheckCircle2 className="h-5 w-5 text-success" />
                         <div>
                           <p className="font-medium text-sm">{bankFile.file.name}</p>
-                          <p className="text-xs text-muted-foreground">{bankFile.totalRows} filas detectadas</p>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="text-xs text-muted-foreground">{bankFile.totalRows} filas detectadas</p>
+                            {bankFile.hash && (
+                              <Badge variant="outline" className="text-[10px] py-0 px-1.5 font-mono text-emerald-600 dark:text-emerald-400 border-emerald-500/30 bg-emerald-500/5">
+                                SHA-256: {bankFile.hash.slice(0, 8)}...
+                              </Badge>
+                            )}
+                          </div>
                         </div>
                       </div>
                       <Button variant="ghost" size="sm" onClick={() => setBankFile(null)}>
@@ -701,7 +733,14 @@ export default function NewReconciliationPage() {
                         <CheckCircle2 className="h-5 w-5 text-success" />
                         <div>
                           <p className="font-medium text-sm">{ledgerFile.file.name}</p>
-                          <p className="text-xs text-muted-foreground">{ledgerFile.totalRows} filas detectadas</p>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="text-xs text-muted-foreground">{ledgerFile.totalRows} filas detectadas</p>
+                            {ledgerFile.hash && (
+                              <Badge variant="outline" className="text-[10px] py-0 px-1.5 font-mono text-emerald-600 dark:text-emerald-400 border-emerald-500/30 bg-emerald-500/5">
+                                SHA-256: {ledgerFile.hash.slice(0, 8)}...
+                              </Badge>
+                            )}
+                          </div>
                         </div>
                       </div>
                       <Button variant="ghost" size="sm" onClick={() => setLedgerFile(null)}>

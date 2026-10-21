@@ -225,13 +225,13 @@ export function detectColumns(headers: string[]): ColumnMapping {
     return null;
   };
 
-  const dateColumn = find(/^fecha/, /^date/, /^fch/, /^dia/, /^d.a/) || '';
-  const debitColumn = find(/^debito/, /^débito/, /^debitos/, /^cargos/) || '';
-  const creditColumn = find(/^credito/, /^crédito/, /^creditos/, /^abonos/) || '';
-  const amountColumn = find(/^valor/, /^monto/, /^amount/, /^importe/, /^total/, /^saldo/) || debitColumn || '';
+  const dateColumn = find(/^fecha/, /^date/, /^fch/, /^dia/, /^d.a/, /^fecha.*movimiento/, /^fecha.*operaci/) || '';
+  const debitColumn = find(/^debito/, /^débito/, /^debitos/, /^cargos/, /^retiro/, /^retiros/, /^valor.*retiro/, /^egreso/, /^egresos/) || '';
+  const creditColumn = find(/^credito/, /^crédito/, /^creditos/, /^abonos/, /^deposito/, /^depositos/, /^valor.*deposito/, /^consignac/, /^consignaciones/, /^ingreso/, /^ingresos/) || '';
+  const amountColumn = find(/^valor/, /^monto/, /^amount/, /^importe/, /^total/, /^saldo.*movimiento/) || debitColumn || '';
   const idColumn = find(/^nit/, /^c.dula/, /^cedula/, /^identificac/, /^doc/, /^id$/, /^referencia.*id/) || '';
-  const nameColumn = find(/^tercero/, /^nombre/, /^raz.n.*social/, /^cliente/, /^beneficiario/, /^descripci/, /^concepto/) || '';
-  const referenceColumn = find(/^referencia/, /^ref/, /^observaci/, /^detalle/) || '';
+  const nameColumn = find(/^tercero/, /^nombre/, /^raz.n.*social/, /^cliente/, /^beneficiario/, /^descripci/, /^concepto/, /^transacci.n/, /^detalle.*transacci/) || '';
+  const referenceColumn = find(/^referencia/, /^ref/, /^observaci/, /^detalle/, /^nro.*transacci/, /^documento/) || '';
   const voucherColumn = find(/^comprobante/, /^doc.*soporte/, /^recibo/, /^factura/, /^nro/) || '';
 
   return {

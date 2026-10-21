@@ -24,6 +24,7 @@ import {
   ChevronDown,
   ChevronUp,
   BarChart3,
+  Receipt,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
@@ -53,7 +54,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import { Reconciliation, MatchRow, ReconciliationStatement, ReconciliationMetadata } from '@/lib/types';
 import { formatCOP, formatDate, formatDateTime } from '@/lib/format';
-import { exportToExcel, exportToPDF } from '@/lib/export';
+import { exportToExcel, exportToPDF, exportAccountingVouchers } from '@/lib/export';
 import { DEMO_MATCHES, DEMO_RECONCILIATIONS, getDemoRuns, saveDemoRun } from '@/lib/demo-data';
 import { useAuth } from '@/lib/supabase/auth-context';
 import { classifyBankMovement } from '@/lib/reconciliation/engine';
@@ -703,6 +704,19 @@ export default function ReconciliationDetailPage() {
     setExporting(false);
   };
 
+  const handleExportVouchers = async () => {
+    if (!recon) return;
+    setExporting(true);
+    try {
+      const companyName = (recon as unknown as { companies: { name: string } }).companies?.name || 'Empresa';
+      exportAccountingVouchers(matches, recon, companyName);
+      toast.success('Asientos contables para Siigo / World Office generados con éxito');
+    } catch {
+      toast.error('Error al exportar asientos contables');
+    }
+    setExporting(false);
+  };
+
   if (loading) {
     return <div className="py-12 text-center text-muted-foreground">Cargando conciliación...</div>;
   }
@@ -776,6 +790,15 @@ export default function ReconciliationDetailPage() {
           <Button onClick={handleExportExcel} disabled={exporting}>
             <Download className="mr-2 h-4 w-4" />
             Excel
+          </Button>
+          <Button
+            variant="outline"
+            onClick={handleExportVouchers}
+            disabled={exporting}
+            className="border-emerald-600/40 text-emerald-700 dark:text-emerald-400 bg-emerald-500/5 hover:bg-emerald-500/10"
+          >
+            <Receipt className="mr-2 h-4 w-4" />
+            Asientos Siigo / ERP
           </Button>
         </div>
       </div>
