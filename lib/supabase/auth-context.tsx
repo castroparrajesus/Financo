@@ -108,6 +108,46 @@ const PRECONFIGURED_USERS: StoredAccount[] = [
     plan: 'profesional',
     created_at: '2026-01-01T00:00:00.000Z',
   },
+  // Ruby Fernandez
+  {
+    id: 'user-ruby-fernandez',
+    email: 'ruby.fernandez@andina.com',
+    password: 'Ruby2026*',
+    full_name: 'Ruby Fernandez',
+    role: 'accountant',
+    plan: 'profesional',
+    created_at: '2026-01-01T00:00:00.000Z',
+    data_consent_accepted: true,
+    data_consent_at: '2026-01-01T00:00:00.000Z',
+    data_consent_version: 'Ley1581-2026-v1',
+  },
+  {
+    id: 'user-ruby-fernandez-alt1',
+    email: 'ruby@andina.com',
+    password: 'Ruby2026*',
+    full_name: 'Ruby Fernandez',
+    role: 'accountant',
+    plan: 'profesional',
+    created_at: '2026-01-01T00:00:00.000Z',
+  },
+  {
+    id: 'user-ruby-fernandez-alt2',
+    email: 'ruby.fernandez@financo.co',
+    password: 'Ruby2026*',
+    full_name: 'Ruby Fernandez',
+    role: 'accountant',
+    plan: 'profesional',
+    created_at: '2026-01-01T00:00:00.000Z',
+  },
+  {
+    id: 'user-ruby-fernandez-alt3',
+    email: 'rubyfernandez@gmail.com',
+    password: 'Ruby2026*',
+    full_name: 'Ruby Fernandez',
+    role: 'accountant',
+    plan: 'profesional',
+    created_at: '2026-01-01T00:00:00.000Z',
+  },
 ];
 
 // In-memory fallback in case localStorage is blocked (Safari Private Browsing, Firefox Strict Tracking, Chrome incognito iframe)
@@ -361,7 +401,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const stored = getStoredAccounts();
     const cleanInput = trimmedEmail.replace(/^(https?:\/\/)?/i, '').trim();
 
-    // Check if input is referring to Sthefanie or Rodolfo
+    // Check if input is referring to Sthefanie, Rodolfo, or Ruby
     const isSthefanie =
       cleanInput.includes('sthefanie') ||
       cleanInput.includes('stefanie') ||
@@ -369,6 +409,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const isRodolfo =
       cleanInput.includes('rodolfo') ||
       cleanInput.includes('pastrana');
+    const isRuby =
+      cleanInput.includes('ruby') ||
+      cleanInput.includes('fernandez');
 
     let match = stored.find((a) => {
       const accEmail = a.email.toLowerCase();
@@ -385,6 +428,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     if (!match && isRodolfo) {
       match = stored.find((a) => a.email.includes('rodolfo')) || PRECONFIGURED_USERS[0];
+    }
+    if (!match && isRuby) {
+      match = stored.find((a) => a.email.includes('ruby')) || PRECONFIGURED_USERS.find((u) => u.id === 'user-ruby-fernandez');
     }
 
     if (match) {
