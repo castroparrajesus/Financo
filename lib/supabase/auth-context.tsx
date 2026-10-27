@@ -23,6 +23,11 @@ const DEMO_PROFILE: Profile = {
   two_factor_enabled: false,
   trial_ends_at: null,
   created_at: '2026-01-01T00:00:00.000Z',
+  data_consent_accepted: true,
+  data_consent_at: '2026-01-01T00:00:00.000Z',
+  data_consent_version: 'Ley1581-2026-v1',
+  data_consent_ip: '127.0.0.1 (Demo)',
+  data_consent_user_agent: 'Financo Demo Agent',
 };
 
 interface StoredAccount {
@@ -33,6 +38,11 @@ interface StoredAccount {
   role: UserRole;
   plan: Plan;
   created_at: string;
+  data_consent_accepted?: boolean;
+  data_consent_at?: string;
+  data_consent_version?: string;
+  data_consent_ip?: string;
+  data_consent_user_agent?: string;
 }
 
 const PRECONFIGURED_USERS: StoredAccount[] = [
@@ -44,6 +54,9 @@ const PRECONFIGURED_USERS: StoredAccount[] = [
     role: 'accountant',
     plan: 'profesional',
     created_at: '2026-01-01T00:00:00.000Z',
+    data_consent_accepted: true,
+    data_consent_at: '2026-01-01T00:00:00.000Z',
+    data_consent_version: 'Ley1581-2026-v1',
   },
   {
     id: 'user-sthefanie-caraballo',
@@ -53,6 +66,9 @@ const PRECONFIGURED_USERS: StoredAccount[] = [
     role: 'auditor',
     plan: 'profesional',
     created_at: '2026-01-01T00:00:00.000Z',
+    data_consent_accepted: true,
+    data_consent_at: '2026-01-01T00:00:00.000Z',
+    data_consent_version: 'Ley1581-2026-v1',
   },
   // Common aliases for Sthefanie (with or without 'h')
   {
@@ -94,10 +110,43 @@ const PRECONFIGURED_USERS: StoredAccount[] = [
   },
 ];
 
+// In-memory fallback in case localStorage is blocked (Safari Private Browsing, Firefox Strict Tracking, Chrome incognito iframe)
+const memoryStorage: Record<string, string> = {};
+
+export const safeStorage = {
+  getItem: (key: string): string | null => {
+    if (typeof window === 'undefined') return memoryStorage[key] ?? null;
+    try {
+      const val = window.localStorage.getItem(key);
+      if (val !== null) return val;
+      return memoryStorage[key] ?? null;
+    } catch {
+      return memoryStorage[key] ?? null;
+    }
+  },
+  setItem: (key: string, value: string): void => {
+    memoryStorage[key] = value;
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(key, value);
+    } catch {
+      // Storage access blocked or quota exceeded; memoryStorage retains state
+    }
+  },
+  removeItem: (key: string): void => {
+    delete memoryStorage[key];
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.removeItem(key);
+    } catch {
+      // Ignore
+    }
+  },
+};
+
 function getStoredAccounts(): StoredAccount[] {
-  if (typeof window === 'undefined') return PRECONFIGURED_USERS;
   try {
-    const raw = window.localStorage.getItem(LOCAL_ACCOUNTS_KEY);
+    const raw = safeStorage.getItem(LOCAL_ACCOUNTS_KEY);
     const existing: StoredAccount[] = raw ? JSON.parse(raw) : [];
 
     // Ensure all preconfigured accounts exist and are refreshed
@@ -116,15 +165,18 @@ function getStoredAccounts(): StoredAccount[] {
 }
 
 function saveAccount(acc: StoredAccount) {
-  if (typeof window === 'undefined') return;
-  const accounts = getStoredAccounts();
-  const index = accounts.findIndex((a) => a.email.toLowerCase() === acc.email.toLowerCase());
-  if (index >= 0) {
-    accounts[index] = acc;
-  } else {
-    accounts.push(acc);
+  try {
+    const accounts = getStoredAccounts();
+    const index = accounts.findIndex((a) => a.email.toLowerCase() === acc.email.toLowerCase());
+    if (index >= 0) {
+      accounts[index] = acc;
+    } else {
+      accounts.push(acc);
+    }
+    safeStorage.setItem(LOCAL_ACCOUNTS_KEY, JSON.stringify(accounts));
+  } catch {
+    // Ignore storage errors
   }
-  window.localStorage.setItem(LOCAL_ACCOUNTS_KEY, JSON.stringify(accounts));
 }
 
 interface AuthContextValue {
@@ -135,8 +187,20 @@ interface AuthContextValue {
   isDemo: boolean;
   startDemo: () => void;
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
-  signUp: (email: string, password: string, fullName: string, role?: UserRole) => Promise<{ error: string | null }>;
+  signUp: (
+    email: string,
+    password: string,
+    fullName: string,
+    role?: UserRole,
+    consentMetadata?: {
+      accepted?: boolean;
+      version?: string;
+      ip?: string;
+      userAgent?: string;
+    }
+  ) => Promise<{ error: string | null }>;
   changePassword: (newPassword: string) => Promise<{ error: string | null }>;
+  recoverPassword: (email: string, newPassword: string) => Promise<{ error: string | null; message?: string }>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
@@ -151,6 +215,7 @@ const AuthContext = createContext<AuthContextValue>({
   signIn: async () => ({ error: 'not implemented' }),
   signUp: async () => ({ error: 'not implemented' }),
   changePassword: async () => ({ error: 'not implemented' }),
+  recoverPassword: async () => ({ error: 'not implemented' }),
   signOut: async () => {},
   refreshProfile: async () => {},
 });
@@ -202,13 +267,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       two_factor_enabled: false,
       trial_ends_at: null,
       created_at: acc.created_at,
+      data_consent_accepted: acc.data_consent_accepted ?? true,
+      data_consent_at: acc.data_consent_at ?? acc.created_at,
+      data_consent_version: acc.data_consent_version ?? 'Ley1581-2026-v1',
+      data_consent_ip: acc.data_consent_ip ?? '127.0.0.1 (Local Session)',
+      data_consent_user_agent: acc.data_consent_user_agent ?? 'Financo Client Secure',
     };
     setIsDemo(false);
     setUser(usr);
     setProfile(prof);
     setSession(null);
-    window.localStorage.removeItem(DEMO_SESSION_KEY);
-    window.localStorage.setItem(ACTIVE_LOCAL_USER_KEY, JSON.stringify({ user: usr, profile: prof }));
+    safeStorage.removeItem(DEMO_SESSION_KEY);
+    safeStorage.setItem(ACTIVE_LOCAL_USER_KEY, JSON.stringify({ user: usr, profile: prof }));
     setLoading(false);
   };
 
@@ -216,13 +286,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let mounted = true;
 
     // 1. Check if demo mode was explicitly chosen
-    if (window.localStorage.getItem(DEMO_SESSION_KEY)) {
+    if (safeStorage.getItem(DEMO_SESSION_KEY)) {
       restoreDemoSession();
       return;
     }
 
     // 2. Check if a local private account is logged in
-    const activeLocal = window.localStorage.getItem(ACTIVE_LOCAL_USER_KEY);
+    const activeLocal = safeStorage.getItem(ACTIVE_LOCAL_USER_KEY);
     if (activeLocal) {
       try {
         const parsed = JSON.parse(activeLocal);
@@ -278,13 +348,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const startDemo = () => {
-    window.localStorage.removeItem(ACTIVE_LOCAL_USER_KEY);
-    window.localStorage.setItem(DEMO_SESSION_KEY, 'true');
+    safeStorage.removeItem(ACTIVE_LOCAL_USER_KEY);
+    safeStorage.setItem(DEMO_SESSION_KEY, 'true');
     restoreDemoSession();
   };
 
   const signIn = async (email: string, password: string) => {
     const trimmedEmail = email.trim().toLowerCase();
+    const cleanPassword = password.trim();
 
     // Check local accounts first (exact email, alias, or username)
     const stored = getStoredAccounts();
@@ -317,7 +388,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     if (match) {
-      const cleanPassword = password.trim();
       // Compare password: exact, or case-insensitive, or without trailing asterisk
       const isCorrectPassword =
         match.password === cleanPassword ||
@@ -329,14 +399,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setLocalUserSession(match);
         return { error: null };
       } else {
-        return { error: 'Contraseña incorrecta. Por favor verifica tus datos o escribe Sthefanie2026*' };
+        return { error: 'Contraseña incorrecta. Por favor verifica tus datos o escribe tu clave asignada.' };
       }
     }
 
     // If Supabase is configured, attempt Supabase Auth
     if (isSupabaseConfigured()) {
       try {
-        const { error } = await supabase.auth.signInWithPassword({ email: trimmedEmail, password });
+        const { error } = await supabase.auth.signInWithPassword({ email: trimmedEmail, password: cleanPassword });
         return { error: error?.message ?? null };
       } catch (err) {
         return { error: err instanceof Error ? err.message : 'Error al conectar con el servidor.' };
@@ -350,7 +420,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     email: string,
     password: string,
     fullName: string,
-    role: UserRole = 'accountant'
+    role: UserRole = 'accountant',
+    consentMetadata?: {
+      accepted?: boolean;
+      version?: string;
+      ip?: string;
+      userAgent?: string;
+    }
   ) => {
     const trimmedEmail = email.trim().toLowerCase();
     const stored = getStoredAccounts();
@@ -359,7 +435,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { error: 'Ya existe una cuenta registrada con este correo electrónico.' };
     }
 
-    // Create private account
+    const consentAccepted = consentMetadata?.accepted ?? true;
+    const consentTimestamp = new Date().toISOString();
+    const consentVersion = consentMetadata?.version || 'Ley1581-2026-v1';
+    const consentUserAgent = consentMetadata?.userAgent || (typeof navigator !== 'undefined' ? navigator.userAgent : 'Web Browser');
+    const consentIp = consentMetadata?.ip || '127.0.0.1 (Registro Directo)';
+
+    // Create private account with Habeas Data consent audit trail
     const newAcc: StoredAccount = {
       id: `usr-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       email: trimmedEmail,
@@ -367,7 +449,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       full_name: fullName.trim() || 'Usuario',
       role,
       plan: 'profesional',
-      created_at: new Date().toISOString(),
+      created_at: consentTimestamp,
+      data_consent_accepted: consentAccepted,
+      data_consent_at: consentTimestamp,
+      data_consent_version: consentVersion,
+      data_consent_ip: consentIp,
+      data_consent_user_agent: consentUserAgent,
     };
 
     saveAccount(newAcc);
@@ -378,7 +465,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await supabase.auth.signUp({
           email: trimmedEmail,
           password,
-          options: { data: { full_name: fullName } },
+          options: {
+            data: {
+              full_name: fullName,
+              data_consent_accepted: consentAccepted,
+              data_consent_at: consentTimestamp,
+              data_consent_version: consentVersion,
+            },
+          },
         });
       } catch {
         // Ignore mirror failure in hybrid mode
@@ -396,7 +490,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const index = stored.findIndex((a) => a.email.toLowerCase() === (user.email || '').toLowerCase());
     if (index >= 0) {
       stored[index].password = newPassword;
-      window.localStorage.setItem(LOCAL_ACCOUNTS_KEY, JSON.stringify(stored));
+      safeStorage.setItem(LOCAL_ACCOUNTS_KEY, JSON.stringify(stored));
     }
 
     if (isSupabaseConfigured()) {
@@ -411,9 +505,68 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: null };
   };
 
+  const recoverPassword = async (email: string, newPassword: string) => {
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedEmail) {
+      return { error: 'Por favor ingresa un correo electrónico válido' };
+    }
+    if (!newPassword || newPassword.length < 6) {
+      return { error: 'La nueva contraseña debe tener al menos 6 caracteres' };
+    }
+
+    const stored = getStoredAccounts();
+    const cleanInput = trimmedEmail.replace(/^(https?:\/\/)?/i, '').trim();
+
+    const isSthefanie = cleanInput.includes('sthefanie') || cleanInput.includes('stefanie') || cleanInput.includes('caraballo');
+    const isRodolfo = cleanInput.includes('rodolfo') || cleanInput.includes('pastrana');
+
+    let index = stored.findIndex((a) => {
+      const accEmail = a.email.toLowerCase();
+      const accUsername = accEmail.split('@')[0];
+      return accEmail === cleanInput || accUsername === cleanInput;
+    });
+
+    if (index === -1 && isSthefanie) {
+      index = stored.findIndex((a) => a.email.includes('sthefanie'));
+    }
+    if (index === -1 && isRodolfo) {
+      index = stored.findIndex((a) => a.email.includes('rodolfo'));
+    }
+
+    if (index >= 0) {
+      stored[index].password = newPassword;
+      safeStorage.setItem(LOCAL_ACCOUNTS_KEY, JSON.stringify(stored));
+
+      if (isSupabaseConfigured()) {
+        try {
+          await supabase.auth.resetPasswordForEmail(trimmedEmail);
+        } catch {
+          // Ignore
+        }
+      }
+
+      return {
+        error: null,
+        message: `Contraseña actualizada con éxito para ${stored[index].full_name}. Ya puedes ingresar con tu nueva clave.`,
+      };
+    }
+
+    if (isSupabaseConfigured()) {
+      try {
+        const { error } = await supabase.auth.resetPasswordForEmail(trimmedEmail);
+        if (error) return { error: error.message };
+        return { error: null, message: 'Hemos enviado un enlace de recuperación a tu correo electrónico.' };
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : 'Error al conectar con el servidor.' };
+      }
+    }
+
+    return { error: 'No se encontró ninguna cuenta registrada con este correo electrónico.' };
+  };
+
   const signOut = async () => {
-    window.localStorage.removeItem(DEMO_SESSION_KEY);
-    window.localStorage.removeItem(ACTIVE_LOCAL_USER_KEY);
+    safeStorage.removeItem(DEMO_SESSION_KEY);
+    safeStorage.removeItem(ACTIVE_LOCAL_USER_KEY);
     if (isSupabaseConfigured()) {
       try {
         await supabase.auth.signOut();
@@ -445,6 +598,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         signIn,
         signUp,
         changePassword,
+        recoverPassword,
         signOut,
         refreshProfile,
       }}

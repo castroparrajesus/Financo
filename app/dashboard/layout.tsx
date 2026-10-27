@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -14,6 +14,7 @@ import {
   LogOut,
   ChevronDown,
   Eye,
+  HardDrive,
 } from 'lucide-react';
 import { useAuth } from '@/lib/supabase/auth-context';
 import { Button } from '@/components/ui/button';
@@ -29,6 +30,9 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { PLAN_LIMITS } from '@/lib/types';
 import { BrandLogo } from '@/components/brand-logo';
 import { FeedbackModal } from '@/components/feedback-modal';
+import { PWAInstallButton } from '@/components/pwa/pwa-install-button';
+import { OfflineCedulasDialog } from '@/components/pwa/offline-cedulas-dialog';
+import { OfflinePolicyDialog } from '@/components/pwa/offline-policy-dialog';
 
 const navItems = [
   { href: '/dashboard', label: 'Panel', icon: LayoutDashboard },
@@ -42,6 +46,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { user, profile, loading, isDemo, signOut } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
+  const [showOfflineCedulas, setShowOfflineCedulas] = useState(false);
+  const [showOfflinePolicy, setShowOfflinePolicy] = useState(false);
+
 
   useEffect(() => {
     if (!loading && !user) {
@@ -92,8 +99,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             );
           })}
         </nav>
-        <div className="border-t border-border/60 p-4">
-          <div className="flex items-center gap-2 rounded-lg bg-secondary/50 px-3 py-2 text-sm">
+        <div className="border-t border-border/60 p-4 space-y-2">
+          <PWAInstallButton className="w-full justify-start text-xs" />
+          <button
+            onClick={() => setShowOfflineCedulas(true)}
+            className="w-full flex items-center gap-2 rounded-lg border border-border/70 bg-card px-3 py-2 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition min-h-[38px]"
+          >
+            <HardDrive className="h-4 w-4 text-emerald-600" />
+            <span>Cédulas offline</span>
+          </button>
+          <div className="flex items-center gap-2 rounded-lg bg-secondary/50 px-3 py-2 text-xs">
             <ShieldCheck className="h-4 w-4 text-success" />
             <span className="text-muted-foreground">Plan {planLabel}</span>
           </div>
@@ -109,24 +124,28 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <BrandLogo size="sm" />
             <span className="text-lg font-bold">Financo</span>
           </div>
-          {/* Mobile nav */}
+          {/* Mobile nav with 44px touch targets */}
           <nav className="flex gap-1 lg:hidden">
             {navItems.slice(0, 3).map((item) => (
               <Link
                 key={item.href}
                 href={item.href}
-                className={`rounded-lg p-2 ${pathname === item.href ? 'bg-primary/10 text-primary' : 'text-muted-foreground'}`}
+                className={`flex items-center justify-center min-h-[44px] min-w-[44px] rounded-lg p-2 ${
+                  pathname === item.href ? 'bg-primary/10 text-primary' : 'text-muted-foreground'
+                }`}
+                title={item.label}
               >
                 <item.icon className="h-5 w-5" />
               </Link>
             ))}
           </nav>
 
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex items-center gap-2 sm:gap-3">
+            <PWAInstallButton className="hidden sm:inline-flex" />
             <FeedbackModal />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="flex items-center gap-2">
+                <Button variant="ghost" className="flex items-center gap-2 min-h-[44px]">
                   <Avatar className="h-8 w-8">
                     <AvatarFallback className="bg-primary/10 text-primary text-xs">
                       {initials}
@@ -146,6 +165,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   </div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => setShowOfflineCedulas(true)}>
+                  <HardDrive className="mr-2 h-4 w-4 text-emerald-600" />
+                  Cédulas sin conexión
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setShowOfflinePolicy(true)}>
+                  <ShieldCheck className="mr-2 h-4 w-4 text-primary" />
+                  Política offline (Habeas Data)
+                </DropdownMenuItem>
                 <DropdownMenuItem asChild>
                   <Link href="/dashboard/ajustes">
                     <Settings className="mr-2 h-4 w-4" />
@@ -167,6 +194,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </DropdownMenu>
           </div>
         </header>
+
+        <OfflineCedulasDialog open={showOfflineCedulas} onOpenChange={setShowOfflineCedulas} />
+        <OfflinePolicyDialog open={showOfflinePolicy} onOpenChange={setShowOfflinePolicy} />
 
         <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8">
           {isDemo && (

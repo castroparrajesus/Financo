@@ -27,6 +27,12 @@ export interface Profile {
   two_factor_enabled: boolean;
   trial_ends_at: string | null;
   created_at: string;
+  // Habeas Data / Ley 1581 de 2012 Consent Evidence
+  data_consent_accepted?: boolean;
+  data_consent_at?: string;
+  data_consent_version?: string;
+  data_consent_ip?: string;
+  data_consent_user_agent?: string;
 }
 
 export interface Company {

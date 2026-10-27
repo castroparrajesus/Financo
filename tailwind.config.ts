@@ -50,6 +50,14 @@ const config: Config = {
           DEFAULT: 'hsl(var(--destructive))',
           foreground: 'hsl(var(--destructive-foreground))',
         },
+        success: {
+          DEFAULT: '#16a34a',
+          foreground: '#ffffff',
+        },
+        warning: {
+          DEFAULT: '#d97706',
+          foreground: '#ffffff',
+        },
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
         ring: 'hsl(var(--ring))',

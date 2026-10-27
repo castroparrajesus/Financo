@@ -25,6 +25,11 @@ import {
   ChevronUp,
   BarChart3,
   Receipt,
+  HardDrive,
+  SlidersHorizontal,
+  RotateCcw,
+  FileCheck,
+  Check,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
@@ -34,6 +39,14 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import {
   Table,
   TableBody,
@@ -54,10 +67,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import { Reconciliation, MatchRow, ReconciliationStatement, ReconciliationMetadata } from '@/lib/types';
 import { formatCOP, formatDate, formatDateTime } from '@/lib/format';
-import { exportToExcel, exportToPDF, exportAccountingVouchers } from '@/lib/export';
+import { exportToExcel, exportToPDF, exportAccountingVouchers, exportSiigoFlatFile, exportWorldOfficeFlatFile } from '@/lib/export';
 import { DEMO_MATCHES, DEMO_RECONCILIATIONS, getDemoRuns, saveDemoRun } from '@/lib/demo-data';
 import { useAuth } from '@/lib/supabase/auth-context';
 import { classifyBankMovement } from '@/lib/reconciliation/engine';
+import { saveReconciliationOffline, getReconciliationOffline } from '@/lib/offline/storage';
 
 const statusConfig = {
   reconciled: { label: 'Conciliado', icon: CheckCircle2, className: 'text-success', badge: 'default' as const },
@@ -103,6 +117,8 @@ export default function ReconciliationDetailPage() {
   const [exporting, setExporting] = useState(false);
   const [showStatement, setShowStatement] = useState(false);
   const [showExecutiveSummary, setShowExecutiveSummary] = useState(false);
+  const [isOfflineLoaded, setIsOfflineLoaded] = useState(false);
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
 
   // Manual linking modal state
   const [linkingBankMatch, setLinkingBankMatch] = useState<MatchRow | null>(null);
@@ -287,50 +303,91 @@ export default function ReconciliationDetailPage() {
         };
         setRecon(reconciliation);
         setMatches(demoRun.matches);
+        saveReconciliationOffline(reconciliation, demoRun.matches).catch(() => {});
         setLoading(false);
         return;
       }
 
       const demoRecon = DEMO_RECONCILIATIONS.find((item) => item.id === reconId);
-      setRecon(
-        demoRecon
-          ? {
-              ...demoRecon,
-              companies: { name: expectedMetadata.companyName || 'INGENIEROS CONSULTORES Y CONSTRUCTORES ICC SAS' },
-              metadata: expectedMetadata,
-              statement: expectedStatement,
-              groups: defaultJan2026Groups,
-            }
-          : null
-      );
-      setMatches(
-        demoRecon
-          ? DEMO_MATCHES.map((match) => ({ ...match, reconciliation_id: demoRecon.id }))
-          : [],
-      );
+      const fullDemoRecon = demoRecon
+        ? {
+            ...demoRecon,
+            companies: { name: expectedMetadata.companyName || 'INGENIEROS CONSULTORES Y CONSTRUCTORES ICC SAS' },
+            metadata: expectedMetadata,
+            statement: expectedStatement,
+            groups: defaultJan2026Groups,
+          }
+        : null;
+      const fullMatches = demoRecon
+        ? DEMO_MATCHES.map((match) => ({ ...match, reconciliation_id: demoRecon.id }))
+        : [];
+
+      setRecon(fullDemoRecon);
+      setMatches(fullMatches);
+      if (fullDemoRecon) {
+        saveReconciliationOffline(fullDemoRecon, fullMatches).catch(() => {});
+      }
       setLoading(false);
       return;
     }
 
-
-    const { data: reconData } = await supabase
-      .from('reconciliations')
-      .select('*, companies(name)')
-      .eq('id', reconId)
-      .maybeSingle();
-
-    if (reconData) {
-      setRecon(reconData as unknown as Reconciliation & { companies: { name: string } });
+    // 1. Check if offline first
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      const offlineData = await getReconciliationOffline(reconId);
+      if (offlineData) {
+        setRecon(offlineData.reconciliation);
+        setMatches(offlineData.matches);
+        setIsOfflineLoaded(true);
+        setLoading(false);
+        toast.info('Cédula cargada desde la copia local sin conexión');
+        return;
+      }
     }
 
-    const { data: matchData } = await supabase
-      .from('matches')
-      .select('*')
-      .eq('reconciliation_id', reconId)
-      .order('status', { ascending: true })
-      .order('row_index_bank', { ascending: true, nullsFirst: false });
+    try {
+      const { data: reconData, error: reconErr } = await supabase
+        .from('reconciliations')
+        .select('*, companies(name)')
+        .eq('id', reconId)
+        .maybeSingle();
 
-    setMatches(matchData as MatchRow[]);
+      if (reconErr || !reconData) {
+        // Attempt fallback from offline cache
+        const offlineData = await getReconciliationOffline(reconId);
+        if (offlineData) {
+          setRecon(offlineData.reconciliation);
+          setMatches(offlineData.matches);
+          setIsOfflineLoaded(true);
+          setLoading(false);
+          toast.info('Sin conexión al servidor: Cédula recuperada de la memoria local');
+          return;
+        }
+      }
+
+      if (reconData) {
+        const fullRecon = reconData as unknown as Reconciliation & { companies: { name: string } };
+        setRecon(fullRecon);
+
+        const { data: matchData } = await supabase
+          .from('matches')
+          .select('*')
+          .eq('reconciliation_id', reconId)
+          .order('status', { ascending: true })
+          .order('row_index_bank', { ascending: true, nullsFirst: false });
+
+        const fullMatches = (matchData as MatchRow[]) || [];
+        setMatches(fullMatches);
+        saveReconciliationOffline(fullRecon, fullMatches).catch(() => {});
+      }
+    } catch {
+      const offlineData = await getReconciliationOffline(reconId);
+      if (offlineData) {
+        setRecon(offlineData.reconciliation);
+        setMatches(offlineData.matches);
+        setIsOfflineLoaded(true);
+        toast.info('Sin conexión: Cédula recuperada de la memoria local');
+      }
+    }
     setLoading(false);
   }, [isDemo, reconId, defaultJan2026Groups]);
 
@@ -489,6 +546,9 @@ export default function ReconciliationDetailPage() {
         });
       }
       setMatches(updatedMatches);
+      if (recon) {
+        saveReconciliationOffline(recon, updatedMatches).catch(() => {});
+      }
       return true;
     } catch (error) {
       console.error('No se pudieron guardar los cambios de revisión demo.', error);
@@ -710,11 +770,33 @@ export default function ReconciliationDetailPage() {
     try {
       const companyName = (recon as unknown as { companies: { name: string } }).companies?.name || 'Empresa';
       exportAccountingVouchers(matches, recon, companyName);
-      toast.success('Asientos contables para Siigo / World Office generados con éxito');
+      toast.success('Plantilla de asientos contables en Excel descargada');
     } catch {
       toast.error('Error al exportar asientos contables');
     }
     setExporting(false);
+  };
+
+  const handleExportSiigo = () => {
+    if (!recon) return;
+    try {
+      const companyName = (recon as unknown as { companies: { name: string } }).companies?.name || 'Empresa';
+      exportSiigoFlatFile(matches, recon, companyName);
+      toast.success('Archivo plano CSV para Siigo Nube descargado');
+    } catch {
+      toast.error('Error al generar archivo plano de Siigo Nube');
+    }
+  };
+
+  const handleExportWorldOffice = () => {
+    if (!recon) return;
+    try {
+      const companyName = (recon as unknown as { companies: { name: string } }).companies?.name || 'Empresa';
+      exportWorldOfficeFlatFile(matches, recon, companyName);
+      toast.success('Archivo plano TXT para World Office descargado');
+    } catch {
+      toast.error('Error al generar archivo plano de World Office');
+    }
   };
 
   if (loading) {
@@ -727,219 +809,328 @@ export default function ReconciliationDetailPage() {
 
   const companyName = (recon as unknown as { companies: { name: string } }).companies?.name || 'Empresa';
 
+  const hasActiveAdvancedFilters = Boolean(dateFrom || dateTo || bankSearch || clientSearch || amountMin || amountMax);
+
+  const handleClearAllFilters = () => {
+    setSearch('');
+    setBankSearch('');
+    setClientSearch('');
+    setDateFrom('');
+    setDateTo('');
+    setAmountMin('');
+    setAmountMax('');
+    setCategoryFilter('all');
+    setStatusFilter('all');
+  };
+
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="sm" onClick={() => router.push('/dashboard/conciliaciones')}>
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Volver
-          </Button>
-          <div>
+      {/* Top Header & Breadcrumbs */}
+      <div className="flex flex-col gap-4 border-b pb-5">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="space-y-1.5">
             <div className="flex items-center gap-2">
-              <Building2 className="h-5 w-5 text-primary" />
-              <h1 className="text-2xl font-bold tracking-tight">{companyName}</h1>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => router.push('/dashboard/conciliaciones')}
+                className="text-xs text-muted-foreground hover:text-foreground h-7 px-2 -ml-2"
+              >
+                <ArrowLeft className="mr-1 h-3.5 w-3.5" />
+                Conciliaciones
+              </Button>
+              <span className="text-muted-foreground/40 text-xs">/</span>
+              <span className="text-xs font-medium text-foreground truncate max-w-xs">{companyName}</span>
+              {isOfflineLoaded && (
+                <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400 gap-1 text-[11px] font-normal py-0">
+                  <HardDrive className="h-3 w-3" />
+                  Copia local offline
+                </Badge>
+              )}
             </div>
-            <p className="text-xs text-muted-foreground">{formatDateTime(recon.created_at)}</p>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              <Building2 className="h-5 w-5 text-primary shrink-0" />
+              <h1 className="text-2xl font-bold tracking-tight text-foreground">{companyName}</h1>
+              {(recon.metadata?.period || (recon as any).period) && (
+                <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-secondary text-secondary-foreground">
+                  {recon.metadata?.period || (recon as any).period}
+                </span>
+              )}
+              {recon.metadata?.companyNit && (
+                <span className="text-xs text-muted-foreground font-mono">
+                  NIT: {recon.metadata.companyNit}
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {formatDateTime(recon.created_at)}
+              {recon.metadata?.ledgerAccount ? ` · Cuenta: ${recon.metadata.ledgerAccount}` : ''}
+            </p>
+          </div>
+
+          {/* Action Tools Cluster */}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Suggestions Batch Approve */}
+            {stats.suggestions > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleApproveAllSuggestions}
+                className="border-warning/40 bg-warning/10 text-warning hover:bg-warning/20 font-medium text-xs shadow-xs"
+              >
+                <CheckCheck className="mr-1.5 h-3.5 w-3.5 text-warning" />
+                Aprobar {stats.suggestions} sugerencias
+              </Button>
+            )}
+
+            {/* Bank Adjustments Batch Approve */}
+            {stats.bankAdjustmentsCount > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleApproveAllBankAdjustments}
+                className="border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-400 hover:bg-amber-500/10 font-medium text-xs shadow-xs"
+              >
+                <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                Contabilizar 4x1000 ({stats.bankAdjustmentsCount})
+              </Button>
+            )}
+
+            {/* Analysis Views Toggles */}
+            <Button
+              variant={showExecutiveSummary ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setShowExecutiveSummary((prev) => !prev)}
+              className="text-xs font-medium"
+            >
+              <BarChart3 className="mr-1.5 h-3.5 w-3.5" />
+              Resumen
+              {showExecutiveSummary ? <ChevronUp className="ml-1 h-3.5 w-3.5" /> : <ChevronDown className="ml-1 h-3.5 w-3.5" />}
+            </Button>
+
+            <Button
+              variant={showStatement ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setShowStatement((prev) => !prev)}
+              className="text-xs font-medium"
+            >
+              <Scale className="mr-1.5 h-3.5 w-3.5" />
+              Cédula
+              {showStatement ? <ChevronUp className="ml-1 h-3.5 w-3.5" /> : <ChevronDown className="ml-1 h-3.5 w-3.5" />}
+            </Button>
+
+            {/* Export Dropdown Menu */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" className="text-xs font-medium shadow-sm gap-1.5" disabled={exporting}>
+                  <Download className="h-3.5 w-3.5" />
+                  <span>Exportar</span>
+                  <ChevronDown className="h-3 w-3 opacity-70" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64 text-xs">
+                <DropdownMenuLabel className="text-xs font-semibold">Descargas disponibles</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleExportExcel} className="cursor-pointer">
+                  <Download className="mr-2 h-4 w-4 text-emerald-600" />
+                  <div>
+                    <span className="font-medium block">Reporte Excel (.xlsx)</span>
+                    <span className="text-[10px] text-muted-foreground">Conciliados, sugerencias y cédula</span>
+                  </div>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleExportPDF} className="cursor-pointer">
+                  <FileText className="mr-2 h-4 w-4 text-red-600" />
+                  <div>
+                    <span className="font-medium block">Cédula NIIF (PDF)</span>
+                    <span className="text-[10px] text-muted-foreground">Formato oficial con firmas</span>
+                  </div>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="text-[11px] font-semibold text-muted-foreground">Archivos Planos para ERPs</DropdownMenuLabel>
+                <DropdownMenuItem onClick={handleExportSiigo} className="cursor-pointer">
+                  <Receipt className="mr-2 h-4 w-4 text-primary" />
+                  <div>
+                    <span className="font-medium block">Plano Siigo Nube (.csv)</span>
+                    <span className="text-[10px] text-muted-foreground">Importador masivo de comprobantes</span>
+                  </div>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleExportWorldOffice} className="cursor-pointer">
+                  <Receipt className="mr-2 h-4 w-4 text-blue-600" />
+                  <div>
+                    <span className="font-medium block">Plano World Office (.txt)</span>
+                    <span className="text-[10px] text-muted-foreground">Importación directa de documentos</span>
+                  </div>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleExportVouchers} className="cursor-pointer">
+                  <Download className="mr-2 h-4 w-4 text-muted-foreground" />
+                  <div>
+                    <span className="font-medium block">Plantilla Asientos (.xlsx)</span>
+                    <span className="text-[10px] text-muted-foreground">Partida doble cuadrada ($0 diff)</span>
+                  </div>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {stats.suggestions > 0 && (
-            <Button
-              variant="secondary"
-              onClick={handleApproveAllSuggestions}
-              className="border-warning/30 bg-warning/10 text-warning hover:bg-warning/20"
-            >
-              <CheckCheck className="mr-2 h-4 w-4 text-warning" />
-              Aprobar sugerencias ({stats.suggestions})
-            </Button>
-          )}
-          {stats.bankAdjustmentsCount > 0 && (
-            <Button
-              variant="outline"
-              onClick={handleApproveAllBankAdjustments}
-              className="border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-400 hover:bg-amber-500/10"
-            >
-              <Sparkles className="mr-2 h-4 w-4" />
-              Contabilizar 4x1000 e Intereses ({stats.bankAdjustmentsCount})
-            </Button>
-          )}
-          <Button
-            variant="outline"
-            onClick={() => setShowExecutiveSummary((prev) => !prev)}
-            className="border-primary/30"
-          >
-            <BarChart3 className="mr-2 h-4 w-4 text-primary" />
-            Resumen Ejecutivo
-            {showExecutiveSummary ? <ChevronUp className="ml-1 h-3.5 w-3.5" /> : <ChevronDown className="ml-1 h-3.5 w-3.5" />}
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => setShowStatement((prev) => !prev)}
-            className="border-primary/30"
-          >
-            <Scale className="mr-2 h-4 w-4 text-primary" />
-            Cédula Contable
-            {showStatement ? <ChevronUp className="ml-1 h-3.5 w-3.5" /> : <ChevronDown className="ml-1 h-3.5 w-3.5" />}
-          </Button>
-          <Button variant="outline" onClick={handleExportPDF} disabled={exporting}>
-            <FileText className="mr-2 h-4 w-4" />
-            PDF
-          </Button>
-          <Button onClick={handleExportExcel} disabled={exporting}>
-            <Download className="mr-2 h-4 w-4" />
-            Excel
-          </Button>
-          <Button
-            variant="outline"
-            onClick={handleExportVouchers}
-            disabled={exporting}
-            className="border-emerald-600/40 text-emerald-700 dark:text-emerald-400 bg-emerald-500/5 hover:bg-emerald-500/10"
-          >
-            <Receipt className="mr-2 h-4 w-4" />
-            Asientos Siigo / ERP
-          </Button>
+      </div>
+
+      {/* KPI Summary Cards Grid */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="rounded-xl border border-border/80 bg-card p-4 shadow-sm">
+          <div className="flex items-center justify-between text-muted-foreground">
+            <span className="text-xs font-medium">Conciliados (1:1)</span>
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-success/10 text-success">
+              <CheckCircle2 className="h-4 w-4" />
+            </div>
+          </div>
+          <p className="mt-1 text-2xl font-bold tracking-tight text-foreground font-mono tabular-nums">
+            {stats.reconciled}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            {formatCOP(stats.amountReconciled1to1)}
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-border/80 bg-card p-4 shadow-sm">
+          <div className="flex items-center justify-between text-muted-foreground">
+            <span className="text-xs font-medium">Grupos n:1</span>
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/10 text-blue-500">
+              <Layers className="h-4 w-4" />
+            </div>
+          </div>
+          <p className="mt-1 text-2xl font-bold tracking-tight text-foreground font-mono tabular-nums">
+            {stats.groupsCount}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            {stats.reconciledGroupBankRows} movimientos agrupados
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-border/80 bg-card p-4 shadow-sm">
+          <div className="flex items-center justify-between text-muted-foreground">
+            <span className="text-xs font-medium">Sugerencias</span>
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-warning/10 text-warning">
+              <AlertTriangle className="h-4 w-4" />
+            </div>
+          </div>
+          <p className="mt-1 text-2xl font-bold tracking-tight text-foreground font-mono tabular-nums">
+            {stats.suggestions}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            {stats.suggestions > 0 ? 'Pendientes de aprobación' : 'Sin pendientes'}
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-border/80 bg-card p-4 shadow-sm">
+          <div className="flex items-center justify-between text-muted-foreground">
+            <span className="text-xs font-medium">Excepciones</span>
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-destructive/10 text-destructive">
+              <XCircle className="h-4 w-4" />
+            </div>
+          </div>
+          <p className="mt-1 text-2xl font-bold tracking-tight text-foreground font-mono tabular-nums">
+            {stats.exceptions}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            {stats.bankExceptions} banco · {stats.ledgerExceptions} libro
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-border/80 bg-card p-4 shadow-sm">
+          <div className="flex items-center justify-between text-muted-foreground">
+            <span className="text-xs font-medium">Total Conciliado</span>
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <TrendingUp className="h-4 w-4" />
+            </div>
+          </div>
+          <p className="mt-1 text-xl font-bold tracking-tight text-foreground font-mono tabular-nums">
+            {formatCOP(stats.amountReconciled, 2)}
+          </p>
+          <p className="text-[11px] text-muted-foreground font-medium mt-0.5">
+            {stats.bankEffectiveness}% banco · {stats.ledgerEffectiveness}% libro
+          </p>
         </div>
       </div>
-
-      {/* Summary cards with live metrics */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        <Card className="border-border/60">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-success/10">
-              <CheckCircle2 className="h-5 w-5 text-success" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold">{stats.reconciled}</p>
-              <p className="text-xs text-muted-foreground">Conciliados (1:1)</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="border-border/60">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
-              <Layers className="h-5 w-5 text-blue-500" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold">{stats.groupsCount}</p>
-              <p className="text-xs text-muted-foreground">Grupos n:1 ({stats.reconciledGroupBankRows} movs)</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="border-border/60">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-warning/10">
-              <AlertTriangle className="h-5 w-5 text-warning" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold">{stats.suggestions}</p>
-              <p className="text-xs text-muted-foreground">Sugerencias</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="border-border/60">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-destructive/10">
-              <XCircle className="h-5 w-5 text-destructive" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold">{stats.exceptions}</p>
-              <p className="text-xs text-muted-foreground">Excepciones ({stats.bankExceptions} bco · {stats.ledgerExceptions} lib)</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="border-border/60">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-              <TrendingUp className="h-5 w-5 text-primary" />
-            </div>
-            <div>
-              <p className="text-xl font-bold">{formatCOP(stats.amountReconciled, 2)}</p>
-              <p className="text-xs text-muted-foreground font-medium">
-                {stats.bankEffectiveness}% banco · {stats.ledgerEffectiveness}% libro
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
 
       {/* Resumen Ejecutivo de Conciliación Bancaria */}
       {showExecutiveSummary && (
-        <Card className="border-primary/30 bg-card shadow-sm">
-          <CardHeader className="pb-3">
+        <Card className="border-primary/20 bg-card shadow-sm overflow-hidden">
+          <CardHeader className="bg-muted/30 pb-3 border-b">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-              <CardTitle className="text-base flex items-center gap-2">
-                <BarChart3 className="h-5 w-5 text-primary" />
+              <CardTitle className="text-sm font-semibold flex items-center gap-2 text-foreground">
+                <BarChart3 className="h-4 w-4 text-primary" />
                 Resumen Ejecutivo de Conciliación Bancaria
               </CardTitle>
-              <Badge variant="outline" className="border-primary text-primary font-mono text-xs">
-                {stats.autoPercentage}% Efectividad ({stats.reconciledTotalBank} de {stats.totalBankRows} filas banco conciliadas)
-              </Badge>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">Efectividad global:</span>
+                <span className="text-xs font-bold font-mono text-primary px-2 py-0.5 rounded bg-primary/10">
+                  {stats.autoPercentage}% ({stats.reconciledTotalBank} de {stats.totalBankRows} filas extracto)
+                </span>
+              </div>
             </div>
           </CardHeader>
-          <CardContent className="pt-0 space-y-4">
+          <CardContent className="p-4 space-y-4">
             <div className="grid gap-4 md:grid-cols-2 text-xs">
               {/* Extracto Bancario */}
-              <div className="rounded-lg border border-border p-3 space-y-2 bg-secondary/15">
-                <div className="font-bold text-sm text-foreground border-b pb-1.5 flex justify-between">
+              <div className="rounded-lg border border-border p-3.5 space-y-2 bg-secondary/10">
+                <div className="font-semibold text-sm text-foreground border-b pb-2 flex justify-between">
                   <span>Extracto Bancario</span>
-                  <span>{stats.totalBankRows} filas procesadas</span>
+                  <span className="text-muted-foreground font-mono">{stats.totalBankRows} filas</span>
                 </div>
                 <div className="flex justify-between text-muted-foreground">
                   <span>Total Abonos (Ingresos)</span>
-                  <span className="font-medium text-foreground">
+                  <span className="font-medium text-foreground font-mono tabular-nums">
                     {formatCOP(recon.metadata?.bankTotalCredits || 20451000)}
                   </span>
                 </div>
                 <div className="flex justify-between text-muted-foreground">
                   <span>Total Cargos (Egresos)</span>
-                  <span className="font-medium text-foreground">
+                  <span className="font-medium text-foreground font-mono tabular-nums">
                     −{formatCOP(Math.abs(recon.metadata?.bankTotalDebits || 14421190.99))}
                   </span>
                 </div>
                 <div className="flex justify-between text-muted-foreground">
-                  <span>Saldo Anterior (Extracto inicial)</span>
-                  <span className="font-medium text-foreground">
+                  <span>Saldo Anterior (Inicial)</span>
+                  <span className="font-medium text-foreground font-mono tabular-nums">
                     {formatCOP(recon.metadata?.bankPreviousBalance || 83012932.09)}
                   </span>
                 </div>
-                <div className="border-t pt-1.5 flex justify-between font-bold text-foreground">
-                  <span>Saldo Actual (Extracto cierre)</span>
-                  <span className="text-primary">
+                <div className="border-t pt-2 flex justify-between font-bold text-foreground">
+                  <span>Saldo al Cierre según Extracto</span>
+                  <span className="text-primary font-mono tabular-nums">
                     {formatCOP(recon.metadata?.bankCurrentBalance || 89042741.10)}
                   </span>
                 </div>
               </div>
 
               {/* Agenda / Libro Auxiliar */}
-              <div className="rounded-lg border border-border p-3 space-y-2 bg-secondary/15">
-                <div className="font-bold text-sm text-foreground border-b pb-1.5 flex justify-between">
+              <div className="rounded-lg border border-border p-3.5 space-y-2 bg-secondary/10">
+                <div className="font-semibold text-sm text-foreground border-b pb-2 flex justify-between">
                   <span>Agenda / Libro Auxiliar (Cta 1110)</span>
-                  <span>{stats.totalLedgerRows} movimientos</span>
+                  <span className="text-muted-foreground font-mono">{stats.totalLedgerRows} movimientos</span>
                 </div>
                 <div className="flex justify-between text-muted-foreground">
                   <span>Total Débitos (Ingresos libros)</span>
-                  <span className="font-medium text-foreground">
+                  <span className="font-medium text-foreground font-mono tabular-nums">
                     {formatCOP(recon.metadata?.ledgerTotalDebits || 60434333)}
                   </span>
                 </div>
                 <div className="flex justify-between text-muted-foreground">
                   <span>Total Créditos (Egresos libros)</span>
-                  <span className="font-medium text-foreground">
+                  <span className="font-medium text-foreground font-mono tabular-nums">
                     {formatCOP(recon.metadata?.ledgerTotalCredits || 7085922.66)}
                   </span>
                 </div>
                 <div className="flex justify-between text-muted-foreground">
                   <span>Saldo Inicial</span>
-                  <span className="font-medium text-foreground">
+                  <span className="font-medium text-foreground font-mono tabular-nums">
                     {formatCOP(recon.metadata?.ledgerInitialBalance || 0)}
                   </span>
                 </div>
-                <div className="border-t pt-1.5 flex justify-between font-bold text-foreground">
-                  <span>Saldo Final (Según libros)</span>
-                  <span className="text-primary">
+                <div className="border-t pt-2 flex justify-between font-bold text-foreground">
+                  <span>Saldo Final según Libros</span>
+                  <span className="text-primary font-mono tabular-nums">
                     {formatCOP(recon.metadata?.ledgerFinalBalance || -53348410.34)}
                   </span>
                 </div>
@@ -948,65 +1139,59 @@ export default function ReconciliationDetailPage() {
 
             {/* Desglose de Resultados de Cruce */}
             <div className="rounded-lg border border-border overflow-hidden text-xs">
-              <div className="bg-muted px-3 py-2 font-semibold text-foreground border-b">
+              <div className="bg-muted px-3.5 py-2 font-semibold text-foreground border-b">
                 Resultados del Proceso de Conciliación
               </div>
               <div className="divide-y divide-border">
-                <div className="px-3 py-2 flex justify-between items-center bg-card">
+                <div className="px-3.5 py-2.5 flex justify-between items-center bg-card">
                   <div>
-                    <span className="font-medium text-foreground">Pareos 1:1 automáticos</span>
-                    <span className="text-muted-foreground ml-2">(Monto idéntico y coincidencia de fecha o ventana)</span>
+                    <span className="font-medium text-foreground">Pareos 1:1 directos conciliados</span>
+                    <span className="text-muted-foreground ml-2">(Monto idéntico, NIT y ventana de fecha)</span>
                   </div>
                   <div className="flex items-center gap-4">
-                    <span className="font-bold text-foreground">{stats.reconciled} filas</span>
+                    <span className="font-bold text-foreground font-mono tabular-nums">{stats.reconciled} filas</span>
                     <span className="text-primary font-mono font-medium">{formatCOP(stats.amountReconciled1to1)}</span>
                   </div>
                 </div>
-                <div className="px-3 py-2 flex justify-between items-center bg-card">
+                <div className="px-3.5 py-2.5 flex justify-between items-center bg-card">
                   <div>
                     <span className="font-medium text-foreground">Grupos n:1 consolidados</span>
-                    <span className="text-muted-foreground ml-2">({stats.groupsCount} grupos: Impuesto 4x1000 GMF e Intereses)</span>
+                    <span className="text-muted-foreground ml-2">({stats.groupsCount} grupos: 4x1000 GMF e Intereses)</span>
                   </div>
                   <div className="flex items-center gap-4">
-                    <span className="font-bold text-foreground">{stats.reconciledGroupBankRows} filas banco</span>
+                    <span className="font-bold text-foreground font-mono tabular-nums">{stats.reconciledGroupBankRows} filas</span>
                     <span className="text-primary font-mono font-medium">{formatCOP(stats.amountReconciledGroups)}</span>
                   </div>
                 </div>
-                <div className="px-3 py-2 flex justify-between items-center bg-card">
+                <div className="px-3.5 py-2.5 flex justify-between items-center bg-card">
                   <div>
                     <span className="font-medium text-foreground">Pareos sugeridos</span>
-                    <span className="text-muted-foreground ml-2">(Pendientes de revisión por el contador)</span>
+                    <span className="text-muted-foreground ml-2">(Coincidencia por monto o referencia)</span>
                   </div>
                   <div className="flex items-center gap-4">
-                    <span className="font-bold text-foreground">{stats.suggestions} filas</span>
-                    <span className="text-muted-foreground font-mono">$ 0</span>
+                    <span className="font-bold text-foreground font-mono tabular-nums">{stats.suggestions} filas</span>
+                    <span className="text-muted-foreground font-mono">Pendiente</span>
                   </div>
                 </div>
-                <div className="px-3 py-2 flex justify-between items-center bg-card">
+                <div className="px-3.5 py-2.5 flex justify-between items-center bg-card">
                   <div>
                     <span className="font-medium text-destructive">Excepciones de Extracto Bancario</span>
-                    <span className="text-muted-foreground ml-2">(Compras con tarjeta y retiros sin registrar en libros)</span>
+                    <span className="text-muted-foreground ml-2">(Compras con tarjeta débito y retiros no registrados)</span>
                   </div>
                   <div className="flex items-center gap-4">
-                    <span className="font-bold text-destructive">{stats.bankExceptions} filas</span>
+                    <span className="font-bold text-destructive font-mono tabular-nums">{stats.bankExceptions} filas</span>
                     <span className="text-muted-foreground font-mono">Requiere registro</span>
                   </div>
                 </div>
-                <div className="px-3 py-2 flex justify-between items-center bg-card">
+                <div className="px-3.5 py-2.5 flex justify-between items-center bg-card">
                   <div>
                     <span className="font-medium text-warning">Excepciones de Agenda Contable</span>
                     <span className="text-muted-foreground ml-2">(Partidas en tránsito pendientes de extracto)</span>
                   </div>
                   <div className="flex items-center gap-4">
-                    <span className="font-bold text-warning">{stats.ledgerExceptions} filas</span>
+                    <span className="font-bold text-warning font-mono tabular-nums">{stats.ledgerExceptions} filas</span>
                     <span className="text-muted-foreground font-mono">Partidas en tránsito</span>
                   </div>
-                </div>
-                <div className="px-3 py-2 flex justify-between items-center bg-secondary/30 font-bold border-t">
-                  <span>Efectividad Automática del Extracto Bancario</span>
-                  <span className="text-primary text-sm font-mono">
-                    {stats.autoPercentage}% ({stats.reconciledTotalBank} de {stats.totalBankRows} filas de extracto conciliadas)
-                  </span>
                 </div>
               </div>
             </div>
@@ -1016,11 +1201,11 @@ export default function ReconciliationDetailPage() {
 
       {/* Cédula Contable / Estado de Conciliación */}
       {showStatement && (
-        <Card className="border-primary/30 bg-card shadow-sm">
-          <CardHeader className="pb-3">
+        <Card className="border-primary/20 bg-card shadow-sm overflow-hidden">
+          <CardHeader className="bg-muted/30 pb-3 border-b">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <CardTitle className="text-base flex items-center gap-2">
-                <Scale className="h-5 w-5 text-primary" />
+              <CardTitle className="text-sm font-semibold flex items-center gap-2 text-foreground">
+                <Scale className="h-4 w-4 text-primary" />
                 Cédula del Estado de Conciliación Bancaria
               </CardTitle>
               <Badge
@@ -1032,65 +1217,60 @@ export default function ReconciliationDetailPage() {
                   : `Diferencia: ${formatCOP(recon.statement?.finalDifference || 0)}`}
               </Badge>
             </div>
-            {recon.metadata?.accountMatchWarning && (
-              <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                ⚠️ {recon.metadata.accountMatchWarning}
-              </p>
-            )}
           </CardHeader>
-          <CardContent className="pt-0 space-y-4">
+          <CardContent className="p-4 space-y-4">
             <div className="grid gap-4 md:grid-cols-2 text-xs">
               {/* Extracto Bancario */}
-              <div className="rounded-lg border border-border p-3 space-y-2 bg-secondary/15">
-                <div className="font-bold text-sm text-foreground border-b pb-1.5 flex justify-between">
+              <div className="rounded-lg border border-border p-3.5 space-y-2 bg-secondary/10">
+                <div className="font-semibold text-sm text-foreground border-b pb-2 flex justify-between">
                   <span>Saldo según Extracto Bancario</span>
-                  <span>{formatCOP(recon.statement?.bankStatementBalance || 0)}</span>
+                  <span className="font-mono tabular-nums">{formatCOP(recon.statement?.bankStatementBalance || 0)}</span>
                 </div>
                 <div className="flex justify-between text-muted-foreground">
-                  <span>(+) Depósitos en tránsito (ingresos en libros no en banco)</span>
-                  <span className="font-medium text-foreground">{formatCOP(recon.statement?.depositsInTransit || 0)}</span>
+                  <span>(+) Depósitos en tránsito</span>
+                  <span className="font-medium text-foreground font-mono tabular-nums">{formatCOP(recon.statement?.depositsInTransit || 0)}</span>
                 </div>
                 <div className="flex justify-between text-muted-foreground">
-                  <span>(−) Pagos en tránsito (egresos en libros no en banco)</span>
-                  <span className="font-medium text-foreground">−{formatCOP(recon.statement?.paymentsInTransit || 0)}</span>
+                  <span>(−) Pagos en tránsito</span>
+                  <span className="font-medium text-foreground font-mono tabular-nums">−{formatCOP(recon.statement?.paymentsInTransit || 0)}</span>
                 </div>
-                <div className="border-t pt-1.5 flex justify-between font-bold text-foreground">
+                <div className="border-t pt-2 flex justify-between font-bold text-foreground">
                   <span>(=) Saldo Extracto Ajustado</span>
-                  <span className="text-primary">{formatCOP(recon.statement?.adjustedBankBalance || 0)}</span>
+                  <span className="text-primary font-mono tabular-nums">{formatCOP(recon.statement?.adjustedBankBalance || 0)}</span>
                 </div>
               </div>
 
               {/* Libros Contables */}
-              <div className="rounded-lg border border-border p-3 space-y-2 bg-secondary/15">
-                <div className="font-bold text-sm text-foreground border-b pb-1.5 flex justify-between">
+              <div className="rounded-lg border border-border p-3.5 space-y-2 bg-secondary/10">
+                <div className="font-semibold text-sm text-foreground border-b pb-2 flex justify-between">
                   <span>Saldo según Libros (Auxiliar 1110)</span>
-                  <span>{formatCOP(recon.statement?.ledgerBalance || 0)}</span>
+                  <span className="font-mono tabular-nums">{formatCOP(recon.statement?.ledgerBalance || 0)}</span>
                 </div>
                 <div className="flex justify-between text-muted-foreground">
-                  <span>(+) Notas crédito no contabilizadas (ingresos banco)</span>
-                  <span className="font-medium text-foreground">{formatCOP(recon.statement?.unrecordedCreditNotes || 0)}</span>
+                  <span>(+) Notas crédito no contabilizadas</span>
+                  <span className="font-medium text-foreground font-mono tabular-nums">{formatCOP(recon.statement?.unrecordedCreditNotes || 0)}</span>
                 </div>
                 <div className="flex justify-between text-muted-foreground">
-                  <span>(−) Notas débito no contabilizadas (egresos banco)</span>
-                  <span className="font-medium text-foreground">−{formatCOP(recon.statement?.unrecordedDebitNotes || 0)}</span>
+                  <span>(−) Notas débito no contabilizadas</span>
+                  <span className="font-medium text-foreground font-mono tabular-nums">−{formatCOP(recon.statement?.unrecordedDebitNotes || 0)}</span>
                 </div>
                 <div className="flex justify-between text-muted-foreground">
                   <span>(±) Diferencia inicial de apertura</span>
-                  <span className="font-medium text-foreground">{formatCOP(recon.statement?.openingDifference || 0)}</span>
+                  <span className="font-medium text-foreground font-mono tabular-nums">{formatCOP(recon.statement?.openingDifference || 0)}</span>
                 </div>
-                <div className="border-t pt-1.5 flex justify-between font-bold text-foreground">
+                <div className="border-t pt-2 flex justify-between font-bold text-foreground">
                   <span>(=) Saldo Libros Ajustado</span>
-                  <span className="text-primary">{formatCOP(recon.statement?.adjustedLedgerBalance || 0)}</span>
+                  <span className="text-primary font-mono tabular-nums">{formatCOP(recon.statement?.adjustedLedgerBalance || 0)}</span>
                 </div>
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground border-t pt-2">
-              <span>Suma neta del extracto: <strong className="text-foreground">{formatCOP(recon.statement?.statementNetMovement || 0)}</strong></span>
-              <span>Diferencia antes de partidas: <strong className="text-foreground">{formatCOP(recon.statement?.differenceBeforeItems || 0)}</strong></span>
+            <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground border-t pt-3">
+              <span>Suma neta extracto: <strong className="text-foreground font-mono">{formatCOP(recon.statement?.statementNetMovement || 0)}</strong></span>
+              <span>Diferencia inicial: <strong className="text-foreground font-mono">{formatCOP(recon.statement?.openingDifference || 0)}</strong></span>
               <span>
                 Diferencia final:{' '}
-                <strong className={recon.statement?.finalDifference === 0 ? 'text-success font-bold' : 'text-destructive font-bold'}>
+                <strong className={recon.statement?.finalDifference === 0 ? 'text-success font-bold font-mono' : 'text-destructive font-bold font-mono'}>
                   {formatCOP(recon.statement?.finalDifference || 0)}
                 </strong>
               </span>
@@ -1099,26 +1279,26 @@ export default function ReconciliationDetailPage() {
         </Card>
       )}
 
-      {/* Partidas de Investigación y Alertas de Auditoría (Problem #5) */}
+      {/* Partidas de Investigación y Alertas de Auditoría */}
       {recon.statement?.investigationItems && recon.statement.investigationItems.length > 0 && (
-        <Card className="border-amber-500/30 bg-amber-500/5 shadow-sm">
-          <CardHeader className="pb-2 pt-3">
-            <CardTitle className="text-sm font-semibold text-amber-800 dark:text-amber-300 flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-amber-600" />
-              Partidas de Investigación y Alertas de Control Interno ({recon.statement.investigationItems.length} partidas)
+        <Card className="border-amber-500/30 bg-amber-500/5 shadow-sm overflow-hidden">
+          <CardHeader className="pb-2 pt-3 border-b border-amber-500/20 bg-amber-500/10">
+            <CardTitle className="text-xs font-semibold text-amber-900 dark:text-amber-200 flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
+              Partidas de Investigación y Control Interno ({recon.statement.investigationItems.length} identificadas)
             </CardTitle>
           </CardHeader>
-          <CardContent className="pt-0 pb-3 space-y-2 text-xs">
+          <CardContent className="p-3 space-y-2 text-xs">
             {recon.statement.investigationItems.map((inv) => (
               <div
                 key={inv.id}
-                className="flex flex-col sm:flex-row sm:items-center sm:justify-between p-2 rounded border border-amber-500/20 bg-card/60 gap-1.5"
+                className="flex flex-col sm:flex-row sm:items-center sm:justify-between p-2.5 rounded-lg border border-amber-500/20 bg-card/80 gap-2"
               >
                 <div>
                   <span className="font-semibold text-foreground">
                     [{inv.source.toUpperCase()}] {inv.description}
                   </span>
-                  <p className="text-muted-foreground">{inv.reason}</p>
+                  <p className="text-muted-foreground mt-0.5">{inv.reason}</p>
                 </div>
                 <div className="shrink-0 font-mono font-bold text-amber-900 dark:text-amber-200">
                   {formatCOP(inv.amount, 2)}
@@ -1129,83 +1309,85 @@ export default function ReconciliationDetailPage() {
         </Card>
       )}
 
-      {/* Guidance box explaining Colombian exceptions */}
-      {stats.exceptions > 20 && (
-        <Card className="border-primary/20 bg-primary/5">
-          <CardContent className="p-4">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div className="space-y-1">
-                <p className="text-sm font-semibold text-foreground flex items-center gap-2">
-                  <Layers className="h-4 w-4 text-primary" />
-                  ¿Por qué aparecen tantas excepciones con &quot;ID vacío&quot; en el extracto?
-                </p>
-                <p className="text-xs text-muted-foreground max-w-3xl leading-relaxed">
-                  En Colombia, la mayoría de extractos bancarios contienen <strong>movimientos propios del banco</strong> (Impuesto 4x1000 GMF, abonos de intereses de ahorro, cuotas de manejo) y <strong>compras con tarjeta débito</strong> que no tienen NIT ni pertenecen a la cartera de clientes. Puedes usar el botón <strong>&quot;Contabilizar 4x1000 e Intereses&quot;</strong> para aprobarlos en bloque o filtrarlos abajo.
-                </p>
-              </div>
-              {stats.bankAdjustmentsCount > 0 && (
-                <Button
-                  size="sm"
-                  onClick={handleApproveAllBankAdjustments}
-                  className="shrink-0"
-                >
-                  Contabilizar {stats.bankAdjustmentsCount} bancarios
-                </Button>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Tabs + Filters */}
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <TabsList>
-            <TabsTrigger value="all">Todos ({matches.length + (recon?.groups?.length || 0)})</TabsTrigger>
-            <TabsTrigger value="reconciled">
-              <CheckCircle2 className="mr-1 h-4 w-4 text-success" />
+      {/* Tabs + Filter Toolbar */}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+        {/* Segmented Tab Navigation */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b pb-3">
+          <TabsList className="h-10 p-1 bg-muted/60">
+            <TabsTrigger value="all" className="text-xs">
+              Todos ({matches.length + (recon?.groups?.length || 0)})
+            </TabsTrigger>
+            <TabsTrigger value="reconciled" className="text-xs gap-1.5">
+              <CheckCircle2 className="h-3.5 w-3.5 text-success" />
               Conciliados ({stats.reconciled})
             </TabsTrigger>
-            <TabsTrigger value="groups">
-              <Layers className="mr-1 h-4 w-4 text-blue-500" />
+            <TabsTrigger value="groups" className="text-xs gap-1.5">
+              <Layers className="h-3.5 w-3.5 text-blue-500" />
               Grupos n:1 ({stats.groupsCount})
             </TabsTrigger>
-            <TabsTrigger value="suggestion">
-              <AlertTriangle className="mr-1 h-4 w-4 text-warning" />
+            <TabsTrigger value="suggestion" className="text-xs gap-1.5">
+              <AlertTriangle className="h-3.5 w-3.5 text-warning" />
               Sugerencias ({stats.suggestions})
             </TabsTrigger>
-            <TabsTrigger value="exception">
-              <XCircle className="mr-1 h-4 w-4 text-destructive" />
+            <TabsTrigger value="exception" className="text-xs gap-1.5">
+              <XCircle className="h-3.5 w-3.5 text-destructive" />
               Excepciones ({stats.exceptions})
             </TabsTrigger>
           </TabsList>
+
+          <div className="flex items-center gap-2">
+            <Button
+              variant={showAdvancedFilters ? 'secondary' : 'outline'}
+              size="sm"
+              onClick={() => setShowAdvancedFilters((prev) => !prev)}
+              className="text-xs h-9 gap-1.5"
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              <span>Filtros avanzados</span>
+              {hasActiveAdvancedFilters && (
+                <span className="h-2 w-2 rounded-full bg-primary shrink-0" />
+              )}
+            </Button>
+            {hasActiveAdvancedFilters && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleClearAllFilters}
+                className="text-xs h-9 text-muted-foreground hover:text-foreground"
+              >
+                <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                Limpiar
+              </Button>
+            )}
+          </div>
         </div>
 
-        <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+        {/* Primary Filter Toolbar */}
+        <div className="flex flex-col gap-3 sm:flex-row">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
-              placeholder="Buscar por ID, nombre, referencia, concepto..."
+              placeholder="Buscar por descripción, NIT, referencia o valor..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-10"
+              className="pl-9 h-10 text-sm"
             />
           </div>
           <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-            <SelectTrigger className="sm:w-60">
+            <SelectTrigger className="sm:w-64 h-10 text-xs">
               <SelectValue placeholder="Tipo de movimiento" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todos los movimientos</SelectItem>
-              <SelectItem value="clients">Solo clientes / Recaudos</SelectItem>
+              <SelectItem value="clients">Clientes / Recaudos de cartera</SelectItem>
               <SelectItem value="bank_adjustments">Gastos 4x1000 e Intereses</SelectItem>
-              <SelectItem value="card_purchases">Compras con tarjeta</SelectItem>
+              <SelectItem value="card_purchases">Compras con tarjeta débito</SelectItem>
               <SelectItem value="unidentified_deposits">Consignaciones sin NIT</SelectItem>
             </SelectContent>
           </Select>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="sm:w-44">
-              <SelectValue placeholder="Estado" />
+            <SelectTrigger className="sm:w-44 h-10 text-xs">
+              <SelectValue placeholder="Estado de cruce" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Cualquier estado</SelectItem>
@@ -1216,113 +1398,134 @@ export default function ReconciliationDetailPage() {
           </Select>
         </div>
 
-        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <Input
-            aria-label="Buscar en banco"
-            placeholder="Banco: nombre, concepto o NIT"
-            value={bankSearch}
-            onChange={(e) => setBankSearch(e.target.value)}
-          />
-          <Input
-            aria-label="Buscar en agenda"
-            placeholder="Cliente: nombre, NIT o referencia"
-            value={clientSearch}
-            onChange={(e) => setClientSearch(e.target.value)}
-          />
-          <Input
-            aria-label="Monto mínimo"
-            type="number"
-            min="0"
-            placeholder="Monto mín. (COP)"
-            value={amountMin}
-            onChange={(e) => setAmountMin(e.target.value)}
-          />
-          <Input
-            aria-label="Monto máximo"
-            type="number"
-            min="0"
-            placeholder="Monto máx. (COP)"
-            value={amountMax}
-            onChange={(e) => setAmountMax(e.target.value)}
-          />
-        </div>
+        {/* Expandable Advanced Filters */}
+        {showAdvancedFilters && (
+          <div className="p-4 rounded-xl border border-border/80 bg-muted/20 space-y-3 text-xs">
+            <div className="font-medium text-foreground">Filtros específicos de auditoría:</div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <Label className="text-[11px] text-muted-foreground mb-1 block">Búsqueda en Extracto</Label>
+                <Input
+                  placeholder="Concepto o ref bancaria"
+                  value={bankSearch}
+                  onChange={(e) => setBankSearch(e.target.value)}
+                  className="h-8 text-xs"
+                />
+              </div>
+              <div>
+                <Label className="text-[11px] text-muted-foreground mb-1 block">Búsqueda en Agenda</Label>
+                <Input
+                  placeholder="Cliente, factura o voucher"
+                  value={clientSearch}
+                  onChange={(e) => setClientSearch(e.target.value)}
+                  className="h-8 text-xs"
+                />
+              </div>
+              <div>
+                <Label className="text-[11px] text-muted-foreground mb-1 block">Monto mínimo (COP)</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  placeholder="Ej: 50000"
+                  value={amountMin}
+                  onChange={(e) => setAmountMin(e.target.value)}
+                  className="h-8 text-xs font-mono"
+                />
+              </div>
+              <div>
+                <Label className="text-[11px] text-muted-foreground mb-1 block">Monto máximo (COP)</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  placeholder="Ej: 5000000"
+                  value={amountMax}
+                  onChange={(e) => setAmountMax(e.target.value)}
+                  className="h-8 text-xs font-mono"
+                />
+              </div>
+            </div>
+          </div>
+        )}
 
+        {/* Tab Contents */}
         {activeTab === 'groups' ? (
           <TabsContent value="groups" className="mt-4">
             <div className="space-y-4">
               {(recon?.groups || []).length === 0 ? (
-                <div className="text-center py-12 text-muted-foreground border rounded-lg border-dashed">
+                <div className="text-center py-12 text-muted-foreground border rounded-xl border-dashed">
                   No hay grupos n:1 consolidados en esta conciliación.
                 </div>
               ) : (
                 (recon?.groups || []).map((group) => (
                   <Card key={group.id} className="border-border/80 shadow-sm overflow-hidden">
-                    <CardHeader className="bg-secondary/20 pb-3">
+                    <CardHeader className="bg-secondary/15 pb-3 border-b">
                       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <Layers className="h-5 w-5 text-primary" />
+                        <div className="flex items-center gap-2.5">
+                          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                            <Layers className="h-4 w-4" />
+                          </div>
                           <div>
                             <CardTitle className="text-sm font-bold flex items-center gap-2">
                               <span>{group.id}: {group.concept}</span>
-                              <Badge variant="outline" className="bg-success/10 text-success border-success/30 text-xs">
+                              <Badge variant="outline" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20 text-xs">
                                 Conciliado 100%
                               </Badge>
                             </CardTitle>
                             <p className="text-xs text-muted-foreground mt-0.5">
-                              Regla: Agrupación de concepto consolidado mensual contra asiento único en agenda
+                              Regla: Consolidación periódica de movimientos bancarios contra asiento único de agenda
                             </p>
                           </div>
                         </div>
                         <div className="text-right">
-                          <span className="text-xs text-muted-foreground">Comprobante libro:</span>
-                          <div className="font-mono font-bold text-xs text-primary">
+                          <span className="text-[11px] text-muted-foreground block">Comprobante en libros:</span>
+                          <span className="font-mono font-bold text-xs text-primary">
                             {group.ledgerRows?.[0]?.voucher || group.ledgerRows?.[0]?.reference || 'CC-01'} • {formatCOP(group.totalLedgerAmount)}
-                          </div>
+                          </span>
                         </div>
                       </div>
                     </CardHeader>
                     <CardContent className="p-4 space-y-3">
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs bg-muted/40 p-2.5 rounded-lg border border-border/60">
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs bg-muted/40 p-3 rounded-lg border border-border/60">
                         <div>
-                          <span className="text-muted-foreground">Total Líneas Banco:</span>
-                          <p className="font-bold text-foreground font-mono">{formatCOP(group.totalBankAmount)}</p>
+                          <span className="text-muted-foreground text-[11px]">Total Extracto:</span>
+                          <p className="font-bold text-foreground font-mono tabular-nums">{formatCOP(group.totalBankAmount)}</p>
                         </div>
                         <div>
-                          <span className="text-muted-foreground">Monto Asiento Agenda:</span>
-                          <p className="font-bold text-foreground font-mono">{formatCOP(group.totalLedgerAmount)}</p>
+                          <span className="text-muted-foreground text-[11px]">Asiento en Libros:</span>
+                          <p className="font-bold text-foreground font-mono tabular-nums">{formatCOP(group.totalLedgerAmount)}</p>
                         </div>
                         <div>
-                          <span className="text-muted-foreground">Diferencia:</span>
-                          <p className="font-bold text-success font-mono">{formatCOP(group.difference)}</p>
+                          <span className="text-muted-foreground text-[11px]">Diferencia:</span>
+                          <p className="font-bold text-success font-mono tabular-nums">{formatCOP(group.difference)}</p>
                         </div>
                         <div>
-                          <span className="text-muted-foreground">Movimientos agrupados:</span>
-                          <p className="font-bold text-foreground">{group.bankRows?.length || 0} filas de extracto</p>
+                          <span className="text-muted-foreground text-[11px]">Movimientos agrupados:</span>
+                          <p className="font-bold text-foreground font-mono">{group.bankRows?.length || 0} filas</p>
                         </div>
                       </div>
 
-                      {/* Detalle de movimientos bancarios */}
-                      <div className="space-y-1">
+                      {/* Detail table */}
+                      <div className="space-y-1.5 pt-1">
                         <p className="text-xs font-semibold text-muted-foreground">
                           Detalle de las {group.bankRows?.length || 0} filas del extracto bancario consolidadas:
                         </p>
-                        <div className="rounded-md border border-border overflow-x-auto max-h-56">
+                        <div className="rounded-lg border border-border overflow-x-auto max-h-56">
                           <table className="w-full text-xs">
                             <thead className="bg-muted/70 text-muted-foreground border-b font-medium">
                               <tr>
-                                <th className="py-1.5 px-3 text-left">ID Fila Banco</th>
-                                <th className="py-1.5 px-3 text-left">Fecha</th>
-                                <th className="py-1.5 px-3 text-left">Concepto</th>
-                                <th className="py-1.5 px-3 text-right">Monto</th>
+                                <th className="py-2 px-3 text-left">Fila</th>
+                                <th className="py-2 px-3 text-left">Fecha</th>
+                                <th className="py-2 px-3 text-left">Concepto</th>
+                                <th className="py-2 px-3 text-right">Monto</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-border">
                               {group.bankRows?.map((bRow) => (
                                 <tr key={bRow.rowId} className="hover:bg-muted/30">
-                                  <td className="py-1 px-3 font-mono text-[11px] font-semibold text-primary">{bRow.rowId}</td>
-                                  <td className="py-1 px-3 text-muted-foreground">{formatDate(bRow.date)}</td>
-                                  <td className="py-1 px-3 text-foreground">{bRow.name}</td>
-                                  <td className="py-1 px-3 text-right font-mono font-medium">{formatCOP(bRow.amount)}</td>
+                                  <td className="py-1.5 px-3 font-mono text-[11px] font-semibold text-primary">{bRow.rowId}</td>
+                                  <td className="py-1.5 px-3 text-muted-foreground font-mono">{formatDate(bRow.date)}</td>
+                                  <td className="py-1.5 px-3 text-foreground">{bRow.name}</td>
+                                  <td className="py-1.5 px-3 text-right font-mono font-medium tabular-nums">{formatCOP(bRow.amount)}</td>
                                 </tr>
                               ))}
                             </tbody>
@@ -1360,12 +1563,12 @@ export default function ReconciliationDetailPage() {
 
           {linkingBankMatch && (
             <div className="space-y-4 flex-1 overflow-hidden flex flex-col">
-              <div className="rounded-lg border border-border/80 bg-secondary/40 p-3 text-sm">
+              <div className="rounded-lg border border-border/80 bg-secondary/30 p-3 text-sm">
                 <p className="font-semibold text-foreground">Movimiento de extracto a conciliar:</p>
                 <div className="mt-1 flex flex-wrap justify-between items-center text-xs">
                   <span><strong>Concepto:</strong> {linkingBankMatch.bank_name || 'Sin descripción'}</span>
                   <span><strong>Fecha:</strong> {formatDate(linkingBankMatch.bank_date)}</span>
-                  <span className="font-bold text-primary"><strong>Monto:</strong> {formatCOP(linkingBankMatch.bank_amount || 0)}</span>
+                  <span className="font-bold text-primary font-mono tabular-nums"><strong>Monto:</strong> {formatCOP(linkingBankMatch.bank_amount || 0)}</span>
                 </div>
               </div>
 
@@ -1379,7 +1582,7 @@ export default function ReconciliationDetailPage() {
                 />
               </div>
 
-              <div className="flex-1 overflow-y-auto border rounded-md divide-y max-h-60">
+              <div className="flex-1 overflow-y-auto border rounded-lg divide-y max-h-60">
                 {availableLedgerItems
                   .filter((item) => {
                     if (!linkSearchQuery) return true;
@@ -1404,10 +1607,10 @@ export default function ReconciliationDetailPage() {
                         </p>
                       </div>
                       <div className="flex items-center gap-3">
-                        <span className="font-bold text-foreground">
+                        <span className="font-bold text-foreground font-mono tabular-nums">
                           {formatCOP(item.ledger_amount || 0)}
                         </span>
-                        <Button size="sm" onClick={() => handleConfirmLink(item)}>
+                        <Button size="sm" onClick={() => handleConfirmLink(item)} className="text-xs h-8">
                           Vincular
                         </Button>
                       </div>
@@ -1434,11 +1637,11 @@ export default function ReconciliationDetailPage() {
       <Dialog open={!!editingMatch} onOpenChange={(open) => { if (!open) setEditingMatch(null); }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Comentario del caso</DialogTitle>
+            <DialogTitle>Comentario y auditoría del caso</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             {editingMatch && (
-              <div className="rounded-lg bg-secondary/50 p-3 text-sm">
+              <div className="rounded-lg bg-secondary/30 p-3 text-xs space-y-1.5 border border-border">
                 <div className="flex items-center gap-2">
                   <Badge variant={statusConfig[editingMatch.status].badge}>
                     {statusConfig[editingMatch.status].label}
@@ -1447,7 +1650,7 @@ export default function ReconciliationDetailPage() {
                     <Badge variant="outline">{exceptionLabels[editingMatch.exception_type]}</Badge>
                   )}
                 </div>
-                <p className="mt-2">
+                <p>
                   <span className="text-muted-foreground">Banco:</span> {formatCOP(editingMatch.bank_amount || 0)} — {editingMatch.bank_name || '—'}
                 </p>
                 <p>
@@ -1456,23 +1659,24 @@ export default function ReconciliationDetailPage() {
               </div>
             )}
             <div className="space-y-2">
-              <Label htmlFor="comment">Comentario</Label>
+              <Label htmlFor="comment" className="text-xs">Observación de auditoría</Label>
               <Textarea
                 id="comment"
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}
-                placeholder="Anota el motivo de tu decisión o cualquier observación..."
+                placeholder="Anota el motivo del ajuste, referencia bancaria o justificación contable..."
                 rows={4}
+                className="text-xs"
               />
             </div>
           </div>
           <DialogFooter>
             <DialogClose asChild>
-              <Button variant="outline">Cancelar</Button>
+              <Button variant="outline" size="sm">Cancelar</Button>
             </DialogClose>
-            <Button onClick={handleSaveComment}>
+            <Button size="sm" onClick={handleSaveComment}>
               <Save className="mr-2 h-4 w-4" />
-              Guardar
+              Guardar observación
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1496,30 +1700,33 @@ function MatchTable({
 }) {
   if (matches.length === 0) {
     return (
-      <Card className="border-dashed border-border/60">
-        <CardContent className="py-12 text-center text-muted-foreground">
-          No hay casos que coincidan con estos filtros
+      <Card className="border-dashed border-border/80">
+        <CardContent className="py-16 text-center text-muted-foreground">
+          <FileCheck className="h-10 w-10 mx-auto text-muted-foreground/60 mb-3" />
+          <p className="font-medium text-foreground">No hay movimientos que coincidan con los filtros</p>
+          <p className="text-xs text-muted-foreground mt-1">Intenta ajustando el término de búsqueda o la categoría seleccionada</p>
         </CardContent>
       </Card>
     );
   }
 
   return (
-    <Card className="border-border/60">
+    <Card className="border-border/80 shadow-sm overflow-hidden">
       <CardContent className="p-0">
         <div className="overflow-x-auto">
           <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-36">Estado</TableHead>
-                <TableHead>Fecha Banco</TableHead>
-                <TableHead>Monto Banco</TableHead>
-                <TableHead>Fecha Agenda</TableHead>
-                <TableHead>Monto Agenda</TableHead>
-                <TableHead>Diferencia</TableHead>
-                <TableHead>Identificador / Concepto</TableHead>
-                <TableHead>Confianza</TableHead>
-                <TableHead className="w-36 text-right">Acciones</TableHead>
+            <TableHeader className="bg-muted/40">
+              <TableRow className="text-xs">
+                <TableHead className="w-36 font-semibold">Estado & Tipo</TableHead>
+                <TableHead className="w-24 font-semibold">Fecha Banco</TableHead>
+                <TableHead className="font-semibold min-w-[200px]">Movimiento en Extracto</TableHead>
+                <TableHead className="text-right font-semibold w-32">Monto Banco</TableHead>
+                <TableHead className="w-24 font-semibold">Fecha Agenda</TableHead>
+                <TableHead className="font-semibold min-w-[200px]">Cliente / Factura</TableHead>
+                <TableHead className="text-right font-semibold w-32">Monto Agenda</TableHead>
+                <TableHead className="text-right font-semibold w-28">Diferencia</TableHead>
+                <TableHead className="w-24 text-center font-semibold">Confianza</TableHead>
+                <TableHead className="w-28 text-right font-semibold">Acciones</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1532,15 +1739,21 @@ function MatchTable({
                 const bankCategory = classifyBankMovement(m.bank_name || '');
 
                 return (
-                  <TableRow key={m.id} className={m.human_status === 'approved' ? 'bg-success/5' : ''}>
-                    <TableCell>
+                  <TableRow
+                    key={m.id}
+                    className={`text-xs transition-colors hover:bg-muted/30 ${
+                      m.human_status === 'approved' ? 'bg-emerald-500/5' : ''
+                    }`}
+                  >
+                    {/* Status Column */}
+                    <TableCell className="py-3">
                       <div className="flex flex-col gap-1">
                         <div className={`flex items-center gap-1.5 ${cfg.className}`}>
-                          <Icon className="h-4 w-4 shrink-0" />
-                          <span className="text-xs font-semibold">{cfg.label}</span>
+                          <Icon className="h-3.5 w-3.5 shrink-0" />
+                          <span className="font-semibold text-xs">{cfg.label}</span>
                         </div>
                         {m.status === 'exception' && !isApproved && (
-                          <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium border ${bankCategory.badgeClass}`}>
+                          <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium border w-fit ${bankCategory.badgeClass}`}>
                             {bankCategory.label}
                           </span>
                         )}
@@ -1551,92 +1764,146 @@ function MatchTable({
                           </span>
                         )}
                         {m.exception_type && isApproved && (
-                          <Badge variant="outline" className="w-fit text-[10px]">
-                            Aprobado por usuario
-                          </Badge>
+                          <span className="text-[10px] text-emerald-700 dark:text-emerald-400 font-medium">
+                            ✓ Aprobado manual
+                          </span>
                         )}
                       </div>
                     </TableCell>
-                    <TableCell className="text-xs">{formatDate(m.bank_date)}</TableCell>
-                    <TableCell className="text-xs font-semibold">
-                      {m.bank_amount !== null ? formatCOP(m.bank_amount) : '—'}
+
+                    {/* Bank Date */}
+                    <TableCell className="py-3 font-mono text-muted-foreground text-[11px]">
+                      {formatDate(m.bank_date)}
                     </TableCell>
-                    <TableCell className="text-xs">{formatDate(m.ledger_date)}</TableCell>
-                    <TableCell className="text-xs font-semibold">
-                      {m.ledger_amount !== null ? formatCOP(m.ledger_amount) : '—'}
+
+                    {/* Bank Details */}
+                    <TableCell className="py-3">
+                      <div className="space-y-0.5 max-w-xs">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {m.row_id_bank && (
+                            <span className="font-mono text-[10px] bg-secondary/80 px-1 py-0.5 rounded text-foreground font-semibold">
+                              {m.row_id_bank}
+                            </span>
+                          )}
+                          {m.bank_id && (
+                            <span className="font-mono text-[11px] font-medium text-foreground">
+                              {m.bank_id}
+                            </span>
+                          )}
+                        </div>
+                        <p className="font-medium text-foreground text-xs leading-snug line-clamp-2" title={m.bank_name || ''}>
+                          {m.bank_name || '—'}
+                        </p>
+                        {m.bank_reference && (
+                          <p className="text-[10px] text-muted-foreground font-mono">
+                            Ref: {m.bank_reference}
+                          </p>
+                        )}
+                      </div>
                     </TableCell>
-                    <TableCell className="text-xs">
+
+                    {/* Bank Amount */}
+                    <TableCell className="py-3 text-right font-mono font-semibold tabular-nums">
+                      {m.bank_amount !== null ? (
+                        <span className={m.bank_amount < 0 ? 'text-foreground' : 'text-primary'}>
+                          {formatCOP(m.bank_amount)}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+
+                    {/* Ledger Date */}
+                    <TableCell className="py-3 font-mono text-muted-foreground text-[11px]">
+                      {formatDate(m.ledger_date)}
+                    </TableCell>
+
+                    {/* Ledger Details */}
+                    <TableCell className="py-3">
+                      <div className="space-y-0.5 max-w-xs">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {m.row_id_ledger && (
+                            <span className="font-mono text-[10px] bg-primary/10 text-primary px-1 py-0.5 rounded font-semibold">
+                              {m.row_id_ledger}
+                            </span>
+                          )}
+                          {m.voucher && (
+                            <span className="font-mono text-[10px] font-semibold text-primary">
+                              {m.voucher}
+                            </span>
+                          )}
+                          {m.ledger_id && (
+                            <span className="font-mono text-[11px] font-medium text-foreground">
+                              {m.ledger_id}
+                            </span>
+                          )}
+                        </div>
+                        <p className="font-medium text-foreground text-xs leading-snug line-clamp-2" title={m.ledger_name || ''}>
+                          {m.ledger_name || '—'}
+                        </p>
+                        {m.ledger_reference && (
+                          <p className="text-[10px] text-muted-foreground font-mono">
+                            Factura: {m.ledger_reference}
+                          </p>
+                        )}
+                      </div>
+                    </TableCell>
+
+                    {/* Ledger Amount */}
+                    <TableCell className="py-3 text-right font-mono font-semibold tabular-nums">
+                      {m.ledger_amount !== null ? (
+                        <span>{formatCOP(m.ledger_amount)}</span>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+
+                    {/* Difference */}
+                    <TableCell className="py-3 text-right font-mono tabular-nums">
                       {m.amount_diff !== null && m.amount_diff !== 0 ? (
-                        <span className={Math.abs(m.amount_diff) > 1 ? 'text-warning font-medium' : ''}>
+                        <span className="font-semibold text-warning">
                           {formatCOP(m.amount_diff)}
                         </span>
                       ) : (
-                        '—'
+                        <span className="text-muted-foreground">$0</span>
                       )}
                     </TableCell>
-                    <TableCell className="text-xs max-w-xs">
-                      <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
-                        {m.row_id_bank && (
-                          <span className="font-mono text-[10px] bg-secondary px-1.5 py-0.5 rounded text-foreground font-semibold">
-                            {m.row_id_bank}
-                          </span>
-                        )}
-                        {m.row_id_ledger && (
-                          <span className="font-mono text-[10px] bg-primary/15 text-primary px-1.5 py-0.5 rounded font-semibold">
-                            {m.row_id_ledger}
-                          </span>
-                        )}
-                        {m.voucher && (
-                          <span className="font-mono text-[10px] font-semibold text-primary">
-                            {m.voucher}
-                          </span>
-                        )}
-                        <span className="font-mono text-[11px] font-medium">
-                          {m.bank_id || m.ledger_id || '—'}
-                        </span>
-                      </div>
-                      {(m.bank_name || m.ledger_name) && (
-                        <div className="text-[11px] text-muted-foreground truncate" title={m.bank_name || m.ledger_name || ''}>
-                          {m.bank_name || m.ledger_name}
-                        </div>
-                      )}
-                      {m.bank_reference && (
-                        <div className="text-[10px] text-muted-foreground/80">
-                          Ref: {m.bank_reference}
-                        </div>
-                      )}
-                      {m.treatment && (
-                        <div className="text-[10px] text-muted-foreground/90 italic mt-0.5" title={m.treatment}>
-                          Acción: {m.treatment}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell>
+
+                    {/* Confidence */}
+                    <TableCell className="py-3 text-center">
                       {m.status === 'suggestion' && !isApproved ? (
-                        <div className="flex items-center gap-2">
-                          <div className="h-1.5 w-14 overflow-hidden rounded-full bg-secondary">
+                        <div className="flex flex-col items-center gap-1">
+                          <span className="text-[11px] font-bold font-mono text-warning">{m.confidence}%</span>
+                          <div className="h-1.5 w-12 overflow-hidden rounded-full bg-secondary">
                             <div
                               className="h-full rounded-full bg-warning"
                               style={{ width: `${m.confidence}%` }}
                             />
                           </div>
-                          <span className="text-xs font-semibold">{m.confidence}%</span>
                         </div>
                       ) : (
-                        <span className="text-xs text-muted-foreground">{isApproved ? '100%' : '—'}</span>
+                        <span className="text-[11px] text-muted-foreground font-mono">
+                          {isApproved ? '100%' : '—'}
+                        </span>
                       )}
                     </TableCell>
-                    <TableCell className="text-right">
+
+                    {/* Actions Toolbar */}
+                    <TableCell className="py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
                         {m.human_status === 'approved' && (
-                          <Badge className="bg-success text-success-foreground text-[10px]">Aprobado</Badge>
+                          <Badge className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 text-[10px] font-medium">
+                            Aprobado
+                          </Badge>
                         )}
                         {m.human_status === 'rejected' && (
-                          <Badge variant="destructive" className="text-[10px]">Rechazado</Badge>
+                          <Badge variant="destructive" className="text-[10px]">
+                            Rechazado
+                          </Badge>
                         )}
                         {m.human_status === 'edited' && m.comment && (
-                          <Button variant="ghost" size="sm" onClick={() => onComment(m)} title={m.comment}>
-                            <MessageSquare className="h-4 w-4" />
+                          <Button variant="ghost" size="sm" onClick={() => onComment(m)} title={m.comment} className="h-7 w-7 p-0">
+                            <MessageSquare className="h-3.5 w-3.5 text-primary" />
                           </Button>
                         )}
 
@@ -1646,11 +1913,11 @@ function MatchTable({
                               variant="ghost"
                               size="sm"
                               onClick={() => onApprove(m)}
-                              title="Aprobar / Conciliar"
+                              title="Aprobar y conciliar"
                               aria-label="Aprobar"
-                              className="hover:text-success hover:bg-success/10 h-8 w-8 p-0"
+                              className="hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 h-7 w-7 p-0"
                             >
-                              <ThumbsUp className="h-4 w-4 text-success" />
+                              <Check className="h-3.5 w-3.5 text-success" />
                             </Button>
                             {m.status === 'exception' && m.bank_amount && (
                               <Button
@@ -1659,9 +1926,9 @@ function MatchTable({
                                 onClick={() => onLink(m)}
                                 title="Vincular con cliente de agenda"
                                 aria-label="Vincular con cliente"
-                                className="hover:text-primary hover:bg-primary/10 h-8 w-8 p-0"
+                                className="hover:text-primary hover:bg-primary/10 h-7 w-7 p-0"
                               >
-                                <LinkIcon className="h-4 w-4 text-primary" />
+                                <LinkIcon className="h-3.5 w-3.5 text-primary" />
                               </Button>
                             )}
                             <Button
@@ -1670,19 +1937,19 @@ function MatchTable({
                               onClick={() => onReject(m)}
                               title="Rechazar"
                               aria-label="Rechazar"
-                              className="hover:text-destructive hover:bg-destructive/10 h-8 w-8 p-0"
+                              className="hover:text-destructive hover:bg-destructive/10 h-7 w-7 p-0"
                             >
-                              <ThumbsDown className="h-4 w-4 text-destructive" />
+                              <XCircle className="h-3.5 w-3.5 text-destructive" />
                             </Button>
                             <Button
                               variant="ghost"
                               size="sm"
                               onClick={() => onComment(m)}
-                              title="Agregar comentario"
+                              title="Agregar comentario de auditoría"
                               aria-label="Comentar"
-                              className="h-8 w-8 p-0"
+                              className="h-7 w-7 p-0"
                             >
-                              <MessageSquare className="h-4 w-4 text-muted-foreground" />
+                              <MessageSquare className="h-3.5 w-3.5 text-muted-foreground" />
                             </Button>
                           </>
                         )}

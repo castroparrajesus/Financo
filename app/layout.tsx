@@ -3,14 +3,29 @@ import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import { AuthProvider } from '../lib/supabase/auth-context';
 import { Toaster } from '../components/ui/toaster';
+import { PWAProvider } from '../components/pwa/pwa-provider';
 
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://financo.co'),
   title: 'Financo — Conciliación automatizada de pagos',
   description: 'Concilia extractos bancarios con tu agenda de clientes en minutos. Diseñado para contadores en Colombia.',
+  themeColor: '#0F2C59',
+  manifest: '/manifest.json',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'default',
+    title: 'Financo',
+  },
   icons: {
-    icon: '/image copy.png',
+    icon: [
+      { url: '/icon.svg', type: 'image/svg+xml' },
+      { url: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' },
+    ],
+    apple: [
+      { url: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' },
+    ],
   },
   openGraph: {
     title: 'Financo — Conciliación automatizada de pagos',
@@ -27,10 +42,13 @@ export default function RootLayout({
     <html lang="es">
       <body className={inter.className}>
         <AuthProvider>
-          {children}
-          <Toaster />
+          <PWAProvider>
+            {children}
+            <Toaster />
+          </PWAProvider>
         </AuthProvider>
       </body>
     </html>
   );
 }
+
