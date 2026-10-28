@@ -25,13 +25,28 @@ import {
   Hash,
   Scale,
   Calendar,
+  Search,
+  Plus,
+  Phone,
+  Mail,
+  MapPin,
+  RotateCcw,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import { useAuth } from '@/lib/supabase/auth-context';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogClose,
+} from '@/components/ui/dialog';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
@@ -46,7 +61,14 @@ import {
 } from '@/lib/reconciliation/file-parser';
 import { detectColumns, normalizeRows, reconcile, ColumnMapping } from '@/lib/reconciliation/engine';
 import { Company, NormalizedRow, MatchResult, ReconciliationMetadata, HumanStatus } from '@/lib/types';
-import { DEMO_COMPANIES, DemoReconciliation, saveDemoRun } from '@/lib/demo-data';
+import {
+  DEMO_COMPANIES,
+  CAMAGUEY_COMPANY,
+  DemoReconciliation,
+  saveDemoRun,
+  getStoredCompanies,
+  saveStoredCompanies,
+} from '@/lib/demo-data';
 import { saveReconciliationOffline } from '@/lib/offline/storage';
 
 type Step = 'select' | 'upload' | 'configure' | 'processing';
@@ -76,11 +98,30 @@ export default function NewReconciliationPage() {
   const searchParams = useSearchParams();
   const initialCompanyId = searchParams.get('companyId');
 
-  const { user, isDemo, loading: authLoading } = useAuth();
+  const { user, isDemo, profile } = useAuth();
   const [step, setStep] = useState<Step>('select');
-  const [companies, setCompanies] = useState<Company[]>([]);
+  // Carga inicial inmediata de empresas disponibles
+  const [companies, setCompanies] = useState<Company[]>(() => {
+    if (typeof window !== 'undefined') {
+      const stored = getStoredCompanies();
+      if (stored && stored.length > 0) return stored;
+    }
+    return [CAMAGUEY_COMPANY, ...DEMO_COMPANIES];
+  });
   const [selectedCompany, setSelectedCompany] = useState<string>(initialCompanyId || '');
   const [selectedPeriod, setSelectedPeriod] = useState<string>('Enero 2026');
+  const [companySearch, setCompanySearch] = useState('');
+  const [quickCreateOpen, setQuickCreateOpen] = useState(false);
+  const [quickForm, setQuickForm] = useState({
+    name: '',
+    nit: '',
+    city: 'Galapa',
+    contact_email: '',
+    contact_phone: '',
+    bankName: 'Bancolombia S.A.',
+    ledgerAccount: '11100501 Bancolombia Cta Cte',
+  });
+
   const [bankFile, setBankFile] = useState<FileData | null>(null);
   const [ledgerFile, setLedgerFile] = useState<FileData | null>(null);
   const [bankMapping, setBankMapping] = useState<ColumnMapping | null>(null);
@@ -91,57 +132,86 @@ export default function NewReconciliationPage() {
   const [groupNto1, setGroupNto1] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [processingStage, setProcessingStage] = useState(1);
-  const [loadingCompanies, setLoadingCompanies] = useState(true);
+  const [loadingCompanies, setLoadingCompanies] = useState(false);
   const [loadingDemoFiles, setLoadingDemoFiles] = useState(false);
   const bankInputRef = useRef<HTMLInputElement>(null);
   const ledgerInputRef = useRef<HTMLInputElement>(null);
 
-  // Load companies
+  const isSupabaseConfigured = useCallback(() => {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+    return url.length > 0 && !url.includes('placeholder-project');
+  }, []);
+
+  // Carga resiliente e inmediata de empresas
   const loadCompanies = useCallback(async () => {
-    if (isDemo) {
+    // 1. Cargar almacenamiento local siempre primero
+    const local = getStoredCompanies();
+    const isRuby =
+      user?.email?.toLowerCase().includes('ruby') ||
+      profile?.full_name?.toLowerCase().includes('ruby');
+
+    // Ordenar de forma que CAMAGUEY S.A y ICC SAS aparezcan de primeras
+    const sorted = [...local].sort((a, b) => {
+      const aIsCamaguey = a.id === CAMAGUEY_COMPANY.id || a.name.toUpperCase().includes('CAMAGUEY');
+      const bIsCamaguey = b.id === CAMAGUEY_COMPANY.id || b.name.toUpperCase().includes('CAMAGUEY');
+      if (aIsCamaguey && !bIsCamaguey) return -1;
+      if (!aIsCamaguey && bIsCamaguey) return 1;
+      return 0;
+    });
+
+    setCompanies(sorted);
+    setLoadingCompanies(false);
+
+    // 2. Consulta en segundo plano con Supabase si está activo
+    if (!isDemo && isSupabaseConfigured()) {
       try {
-        const saved = sessionStorage.getItem('financo_demo_companies');
-        setCompanies(saved ? JSON.parse(saved) : DEMO_COMPANIES);
-      } catch {
-        setCompanies(DEMO_COMPANIES);
+        const { data, error } = await supabase
+          .from('companies')
+          .select('*')
+          .order('name', { ascending: true });
+        if (!error && data && data.length > 0) {
+          const merged = [...sorted];
+          (data as Company[]).forEach((remoteComp) => {
+            if (
+              !merged.some(
+                (c) =>
+                  c.id === remoteComp.id ||
+                  (c.nit && remoteComp.nit && c.nit.replace(/\D/g, '') === remoteComp.nit.replace(/\D/g, ''))
+              )
+            ) {
+              merged.push(remoteComp);
+            }
+          });
+          setCompanies(merged);
+          saveStoredCompanies(merged);
+        }
+      } catch (err) {
+        console.warn('Supabase no disponible, usando almacenamiento local.', err);
       }
-      setLoadingCompanies(false);
-      return;
     }
+  }, [isDemo, isSupabaseConfigured, user, profile]);
 
-    setLoadingCompanies(true);
-    try {
-      const { data, error } = await supabase
-        .from('companies')
-        .select('*')
-        .order('name', { ascending: true });
-      if (error) {
-        console.error('Error al cargar empresas.', error);
-        toast.error('Error al cargar empresas');
-        return;
-      }
-      setCompanies(data as Company[]);
-    } catch (error) {
-      console.error('No se pudieron consultar las empresas.', error);
-      toast.error('No se pudieron cargar las empresas. Intenta de nuevo.');
-    } finally {
-      setLoadingCompanies(false);
-    }
-  }, [isDemo]);
-
+  // Cargar al montar el componente de inmediato y escuchar eventos
   useEffect(() => {
-    if (user) {
-      loadCompanies();
-    } else if (!authLoading) {
-      setLoadingCompanies(false);
-    }
-  }, [authLoading, loadCompanies, user]);
+    loadCompanies();
 
-  // Si viene companyId en la URL, seleccionarlo automáticamente
+    const handleSync = () => {
+      loadCompanies();
+    };
+
+    window.addEventListener('financo_companies_updated', handleSync);
+    window.addEventListener('storage', handleSync);
+    return () => {
+      window.removeEventListener('financo_companies_updated', handleSync);
+      window.removeEventListener('storage', handleSync);
+    };
+  }, [loadCompanies]);
+
+  // Si viene companyId en la URL, seleccionarlo; de lo contrario seleccionar la primera empresa
   useEffect(() => {
     if (initialCompanyId && companies.some((c) => c.id === initialCompanyId)) {
       setSelectedCompany(initialCompanyId);
-    } else if (!selectedCompany && companies.length > 0) {
+    } else if ((!selectedCompany || !companies.some((c) => c.id === selectedCompany)) && companies.length > 0) {
       setSelectedCompany(companies[0].id);
     }
   }, [initialCompanyId, companies, selectedCompany]);
@@ -149,6 +219,64 @@ export default function NewReconciliationPage() {
   const activeCompany = useMemo(() => {
     return companies.find((c) => c.id === selectedCompany) || companies[0];
   }, [companies, selectedCompany]);
+
+  // Filtro de búsqueda de empresas
+  const filteredCompanies = useMemo(() => {
+    if (!companySearch.trim()) return companies;
+    const query = companySearch.toLowerCase().trim();
+    return companies.filter(
+      (c) =>
+        c.name.toLowerCase().includes(query) ||
+        (c.nit && c.nit.toLowerCase().includes(query)) ||
+        (c.city && c.city.toLowerCase().includes(query))
+    );
+  }, [companies, companySearch]);
+
+  const handleQuickCreateCompany = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedName = quickForm.name.trim();
+    if (!trimmedName) {
+      toast.error('Ingresa la Razón Social de la empresa');
+      return;
+    }
+
+    const cleanNit = quickForm.nit.replace(/[^\d-]/g, '');
+    const newCompany: Company = {
+      id: `company-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      owner_id: user?.id || 'user-ruby-fernandez',
+      name: trimmedName,
+      nit: cleanNit || '901.000.000-1',
+      contact_email: quickForm.contact_email?.trim() || null,
+      contact_phone: quickForm.contact_phone?.trim() || null,
+      city: quickForm.city || 'Galapa',
+      notes: `Banco: ${quickForm.bankName} | PUC: ${quickForm.ledgerAccount}`,
+      created_at: new Date().toISOString(),
+    };
+
+    const updated = [newCompany, ...companies];
+    setCompanies(updated);
+    saveStoredCompanies(updated);
+    setSelectedCompany(newCompany.id);
+    setQuickCreateOpen(false);
+    setQuickForm({
+      name: '',
+      nit: '',
+      city: 'Galapa',
+      contact_email: '',
+      contact_phone: '',
+      bankName: 'Bancolombia S.A.',
+      ledgerAccount: '11100501 Bancolombia Cta Cte',
+    });
+    toast.success(`¡Empresa "${trimmedName}" registrada y seleccionada para conciliar!`);
+  };
+
+  const handleRestoreDemoCompanies = () => {
+    const list = [CAMAGUEY_COMPANY, ...DEMO_COMPANIES];
+    saveStoredCompanies(list);
+    setCompanies(list);
+    setSelectedCompany(list[0].id);
+    toast.success('Empresas oficiales restauradas (CAMAGUEY S.A y ICC S.A.S.)');
+  };
 
   const handleStartStep = () => {
     if (!selectedCompany) {
@@ -267,7 +395,10 @@ export default function NewReconciliationPage() {
   };
 
   const handleRunReconciliation = async () => {
-    if (!bankFile || !ledgerFile || !bankMapping || !ledgerMapping || !selectedCompany || !user) return;
+    if (!bankFile || !ledgerFile || !bankMapping || !ledgerMapping || !selectedCompany) {
+      if (!selectedCompany) toast.error('Selecciona una empresa cliente para continuar');
+      return;
+    }
 
     setProcessing(true);
     setStep('processing');
@@ -297,12 +428,14 @@ export default function NewReconciliationPage() {
         },
       });
 
-      if (isDemo) {
+      const effectiveOwnerId = user?.id || 'user-ruby-fernandez';
+
+      if (isDemo || !isSupabaseConfigured() || !user) {
         const company = activeCompany || DEMO_COMPANIES[0];
-        const reconciliationId = `demo-run-${crypto.randomUUID()}`;
+        const reconciliationId = `recon-run-${crypto.randomUUID()}`;
         const reconciliation: DemoReconciliation = {
           id: reconciliationId,
-          owner_id: user.id,
+          owner_id: effectiveOwnerId,
           company_id: company.id,
           bank_upload_id: `${reconciliationId}-bank`,
           ledger_upload_id: `${reconciliationId}-ledger`,
@@ -736,65 +869,239 @@ export default function NewReconciliationPage() {
         <div className="space-y-6">
           <Card className="border-border/80 shadow-xs">
             <CardHeader className="pb-3 border-b bg-muted/20">
-              <CardTitle className="text-base font-semibold flex items-center gap-2">
-                <Building2 className="h-4 w-4 text-primary" />
-                Selecciona la Empresa Cliente y el Período a Conciliar
-              </CardTitle>
-              <CardDescription className="text-xs">
-                Escoge la entidad registrada para asociar la cédula y papeles de trabajo contables
-              </CardDescription>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <CardTitle className="text-base font-semibold flex items-center gap-2">
+                    <Building2 className="h-4 w-4 text-primary" />
+                    Selecciona la Empresa Cliente y el Período a Conciliar
+                  </CardTitle>
+                  <CardDescription className="text-xs">
+                    Elige la entidad jurídica registrada para generar la Cédula Oficial y papeles de trabajo NIIF
+                  </CardDescription>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setQuickCreateOpen(true)}
+                    className="h-8 text-xs gap-1.5 border-primary/30 text-primary hover:bg-primary/10"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>Nueva Empresa</span>
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleRestoreDemoCompanies}
+                    className="h-8 text-xs gap-1 text-muted-foreground hover:text-foreground"
+                    title="Cargar empresas demostrativas (CAMAGUEY S.A y ICC SAS)"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    <span className="hidden md:inline">Restaurar</span>
+                  </Button>
+                </div>
+              </div>
             </CardHeader>
 
             <CardContent className="space-y-5 pt-4">
               {loadingCompanies ? (
-                <div className="py-8 text-center text-xs text-muted-foreground">
-                  Cargando empresas del portafolio...
+                <div className="py-8 text-center text-xs text-muted-foreground flex items-center justify-center gap-2">
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                  <span>Cargando empresas del portafolio...</span>
                 </div>
               ) : companies.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-border/80 p-8 text-center space-y-3">
-                  <p className="text-xs text-muted-foreground">No tienes empresas registradas aún.</p>
-                  <Button size="sm" onClick={() => router.push('/dashboard/empresas')}>
-                    Crear Empresa Cliente
-                  </Button>
+                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary mx-auto">
+                    <Building2 className="h-6 w-6" />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="font-semibold text-xs text-foreground">No tienes empresas registradas en este momento</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Puedes registrar tu empresa cliente o cargar las empresas demostrativas oficiales.
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-center gap-2 pt-1">
+                    <Button size="sm" onClick={() => setQuickCreateOpen(true)} className="gap-1.5 text-xs">
+                      <Plus className="h-3.5 w-3.5" />
+                      Registrar Empresa Cliente
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={handleRestoreDemoCompanies} className="text-xs">
+                      Cargar CAMAGUEY S.A e ICC
+                    </Button>
+                  </div>
                 </div>
               ) : (
-                <div className="space-y-4">
-                  {/* Selector visual de empresas */}
-                  <div className="space-y-2">
-                    <Label className="text-xs font-semibold">Empresa Cliente Registrada:</Label>
-                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                      {companies.map((c) => {
-                        const isSelected = selectedCompany === c.id;
-                        return (
-                          <div
-                            key={c.id}
-                            onClick={() => setSelectedCompany(c.id)}
-                            className={`cursor-pointer rounded-xl border p-3.5 space-y-2 transition-all ${
-                              isSelected
-                                ? 'border-primary bg-primary/5 shadow-xs ring-1 ring-primary'
-                                : 'border-border/80 hover:border-border hover:bg-muted/30'
-                            }`}
+                <div className="space-y-5">
+                  {/* Barra de Filtro y Selección Directa */}
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs font-semibold flex items-center justify-between">
+                        <span>Buscar en el Portafolio:</span>
+                        <span className="text-[10px] text-muted-foreground font-normal">
+                          {filteredCompanies.length} de {companies.length} empresas
+                        </span>
+                      </Label>
+                      <div className="relative">
+                        <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                        <Input
+                          placeholder="Buscar por Razón Social (ej. CAMAGUEY, ICC...), NIT o Ciudad..."
+                          value={companySearch}
+                          onChange={(e) => setCompanySearch(e.target.value)}
+                          className="pl-8 text-xs h-9"
+                        />
+                        {companySearch && (
+                          <button
+                            onClick={() => setCompanySearch('')}
+                            className="absolute right-2.5 top-2.5 text-xs text-muted-foreground hover:text-foreground"
                           >
-                            <div className="flex items-start justify-between">
-                              <span className="font-semibold text-xs text-foreground line-clamp-1">
-                                {c.name}
-                              </span>
-                              {isSelected && <CheckCircle2 className="h-4 w-4 text-primary shrink-0" />}
-                            </div>
-                            <div className="flex items-center gap-2 text-[11px] text-muted-foreground font-mono">
-                              <span>NIT: {c.nit || 'Sin NIT'}</span>
-                              <span>·</span>
-                              <span>{c.city || 'Colombia'}</span>
-                            </div>
-                          </div>
-                        );
-                      })}
+                            ×
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label className="text-xs font-semibold">Seleccionar Empresa (Lista Desplegable):</Label>
+                      <Select value={selectedCompany} onValueChange={setSelectedCompany}>
+                        <SelectTrigger className="h-9 text-xs">
+                          <Building2 className="mr-2 h-3.5 w-3.5 text-primary shrink-0" />
+                          <SelectValue placeholder="Selecciona una empresa cliente..." />
+                        </SelectTrigger>
+                        <SelectContent className="max-h-64">
+                          {companies.map((c) => (
+                            <SelectItem key={c.id} value={c.id} className="text-xs">
+                              {c.name} {c.nit ? `· NIT ${c.nit}` : ''} {c.city ? `(${c.city})` : ''}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                  {/* Selector visual de empresas en formato de tarjetas */}
+                  <div className="space-y-2">
+                    <Label className="text-xs font-semibold text-muted-foreground">
+                      Haz clic en la empresa con la que deseas trabajar:
+                    </Label>
+
+                    {filteredCompanies.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-border/80 p-6 text-center space-y-2">
+                        <p className="text-xs text-muted-foreground">
+                          No se encontraron empresas con el criterio &quot;{companySearch}&quot;.
+                        </p>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setQuickForm((prev) => ({ ...prev, name: companySearch }));
+                            setQuickCreateOpen(true);
+                          }}
+                          className="text-xs gap-1.5"
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          Registrar &quot;{companySearch}&quot; como nueva empresa
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 max-h-[380px] overflow-y-auto pr-1">
+                        {filteredCompanies.map((c) => {
+                          const isSelected = selectedCompany === c.id;
+                          const isCamaguey = c.id === CAMAGUEY_COMPANY.id || c.name.toUpperCase().includes('CAMAGUEY');
+                          const isIcc = c.name.toUpperCase().includes('ICC') || c.name.toUpperCase().includes('INGENIEROS');
+
+                          return (
+                            <div
+                              key={c.id}
+                              onClick={() => setSelectedCompany(c.id)}
+                              className={`group cursor-pointer rounded-xl border p-4 space-y-2.5 transition-all text-left relative ${
+                                isSelected
+                                  ? 'border-primary bg-primary/5 shadow-sm ring-2 ring-primary/40'
+                                  : 'border-border/80 hover:border-primary/40 hover:bg-muted/30'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="space-y-0.5">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="font-bold text-xs text-foreground group-hover:text-primary transition-colors">
+                                      {c.name}
+                                    </span>
+                                    {isCamaguey && (
+                                      <Badge variant="secondary" className="text-[9px] py-0 px-1 font-semibold text-primary bg-primary/10">
+                                        Principal
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-2 text-[11px] text-muted-foreground font-mono">
+                                    <span>NIT: {c.nit || 'Sin NIT'}</span>
+                                    <span>·</span>
+                                    <span>{c.city || 'Galapa'}</span>
+                                  </div>
+                                </div>
+
+                                {isSelected ? (
+                                  <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-xs">
+                                    <Check className="h-3 w-3" />
+                                  </div>
+                                ) : (
+                                  <div className="h-5 w-5 shrink-0 rounded-full border border-border group-hover:border-primary/60 transition-colors" />
+                                )}
+                              </div>
+
+                              <div className="flex items-center justify-between text-[10px] text-muted-foreground pt-1 border-t border-border/60">
+                                <span className="flex items-center gap-1">
+                                  <Landmark className="h-3 w-3 text-blue-600 shrink-0" />
+                                  <span>{isIcc ? 'Bancolombia Cta Cte' : isCamaguey ? 'Bancolombia Galapa' : 'Bancolombia'}</span>
+                                </span>
+                                <Badge variant="outline" className="text-[9px] py-0 px-1 border-emerald-500/30 text-emerald-700 dark:text-emerald-400">
+                                  PUC 11100501
+                                </Badge>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Empresa Activa Seleccionada - Resumen Contable */}
+                  {activeCompany && (
+                    <div className="rounded-xl border border-primary/30 bg-gradient-to-r from-primary/10 via-primary/5 to-transparent p-4 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 className="h-4 w-4 text-primary shrink-0" />
+                          <span className="font-bold text-xs text-foreground">
+                            Empresa Seleccionada: {activeCompany.name}
+                          </span>
+                        </div>
+                        <Badge variant="outline" className="font-mono text-[10px] border-primary/30 text-primary">
+                          NIT {activeCompany.nit || 'Sin NIT'}
+                        </Badge>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs text-muted-foreground pt-1">
+                        <div className="flex items-center gap-1.5">
+                          <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
+                          <span>Sede: {activeCompany.city || 'Galapa, Atlántico'}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <CreditCard className="h-3.5 w-3.5 text-muted-foreground" />
+                          <span>Cuenta PUC: 11100501 Bancolombia Cta Cte</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+                          <span className="text-emerald-700 dark:text-emerald-400 font-medium">Marco: NIIF para Pymes / NIC 7</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Parámetros de Período y Mayor */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
                     <div className="space-y-1.5">
-                      <Label className="text-xs font-semibold">Período Contable Mensual:</Label>
+                      <Label className="text-xs font-semibold">Período Contable Mensual a Conciliar:</Label>
                       <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
                         <SelectTrigger className="h-9 text-xs">
                           <Calendar className="mr-2 h-3.5 w-3.5 text-muted-foreground" />
@@ -809,7 +1116,7 @@ export default function NewReconciliationPage() {
                     </div>
 
                     <div className="space-y-1.5">
-                      <Label className="text-xs font-semibold">Cuenta Auxiliar del Mayor:</Label>
+                      <Label className="text-xs font-semibold">Cuenta Auxiliar del Mayor Asignada:</Label>
                       <div className="flex items-center h-9 px-3 rounded-md border border-border/80 bg-muted/20 text-xs font-mono text-muted-foreground">
                         <CreditCard className="mr-2 h-3.5 w-3.5 text-primary shrink-0" />
                         <span>11100501 Bancolombia Cuenta Corriente</span>
@@ -817,7 +1124,11 @@ export default function NewReconciliationPage() {
                     </div>
                   </div>
 
-                  <div className="flex justify-end pt-3">
+                  <div className="flex items-center justify-between pt-2 border-t border-border/70">
+                    <div className="text-xs text-muted-foreground">
+                      Empresa activa: <strong className="text-foreground">{activeCompany?.name}</strong>
+                    </div>
+
                     <Button onClick={handleStartStep} disabled={!selectedCompany} className="gap-2">
                       <span>Continuar a Carga de Archivos</span>
                       <ArrowRight className="h-4 w-4" />
@@ -857,6 +1168,121 @@ export default function NewReconciliationPage() {
               </CardContent>
             </Card>
           )}
+
+          {/* Modal Rápido para Crear Empresa sin salir de la conciliación */}
+          <Dialog open={quickCreateOpen} onOpenChange={setQuickCreateOpen}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2 text-base">
+                  <Building2 className="h-4 w-4 text-primary" />
+                  Registrar Nueva Empresa Cliente
+                </DialogTitle>
+                <CardDescription className="text-xs">
+                  Crea la entidad para vincularla inmediatamente a esta conciliación bancaria.
+                </CardDescription>
+              </DialogHeader>
+
+              <form onSubmit={handleQuickCreateCompany} className="space-y-4 pt-2">
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold">
+                    Razón Social Completa <span className="text-destructive">*</span>
+                  </Label>
+                  <Input
+                    required
+                    placeholder="Ej. CAMAGUEY S.A"
+                    value={quickForm.name}
+                    onChange={(e) => setQuickForm({ ...quickForm, name: e.target.value })}
+                    className="text-xs h-9"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Se utilizará en la Cédula Oficial NIIF y certificaciones de auditoría.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold">
+                      NIT con Dígito de Verificación <span className="text-destructive">*</span>
+                    </Label>
+                    <Input
+                      required
+                      placeholder="Ej. 890100026-1"
+                      value={quickForm.nit}
+                      onChange={(e) => setQuickForm({ ...quickForm, nit: e.target.value })}
+                      className="text-xs h-9 font-mono"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold">Ciudad / Municipio</Label>
+                    <Input
+                      placeholder="Ej. Galapa / Barranquilla"
+                      value={quickForm.city}
+                      onChange={(e) => setQuickForm({ ...quickForm, city: e.target.value })}
+                      className="text-xs h-9"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold">Correo de Contacto Contable</Label>
+                    <Input
+                      type="email"
+                      placeholder="PROVEEDORES@CAMAGUEY.COM.CO"
+                      value={quickForm.contact_email}
+                      onChange={(e) => setQuickForm({ ...quickForm, contact_email: e.target.value })}
+                      className="text-xs h-9"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold">Teléfono / PBX</Label>
+                    <Input
+                      placeholder="3016410377"
+                      value={quickForm.contact_phone}
+                      onChange={(e) => setQuickForm({ ...quickForm, contact_phone: e.target.value })}
+                      className="text-xs h-9"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold">Banco Principal</Label>
+                    <Input
+                      placeholder="Bancolombia S.A."
+                      value={quickForm.bankName}
+                      onChange={(e) => setQuickForm({ ...quickForm, bankName: e.target.value })}
+                      className="text-xs h-9"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold">Cuenta Auxiliar PUC</Label>
+                    <Input
+                      placeholder="11100501 Bancolombia Cta Cte"
+                      value={quickForm.ledgerAccount}
+                      onChange={(e) => setQuickForm({ ...quickForm, ledgerAccount: e.target.value })}
+                      className="text-xs h-9 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <DialogFooter className="pt-2">
+                  <DialogClose asChild>
+                    <Button type="button" variant="outline" size="sm">
+                      Cancelar
+                    </Button>
+                  </DialogClose>
+                  <Button type="submit" size="sm" className="gap-1.5">
+                    <Plus className="h-3.5 w-3.5" />
+                    Registrar y Seleccionar
+                  </Button>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
         </div>
       )}
 
@@ -865,16 +1291,43 @@ export default function NewReconciliationPage() {
       {/* ============================================================== */}
       {step === 'upload' && (
         <div className="space-y-6">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h2 className="text-xl font-bold tracking-tight text-foreground">Sube tus Archivos</h2>
               <p className="text-xs text-muted-foreground">
                 Carga el extracto oficial emitido por el banco y el libro auxiliar contable de tu ERP
               </p>
             </div>
-            <Button variant="ghost" size="sm" onClick={() => setStep('select')} className="text-xs gap-1.5">
-              <ArrowLeft className="h-3.5 w-3.5" />
-              Atrás
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setStep('select')} className="text-xs gap-1.5">
+                <ArrowLeft className="h-3.5 w-3.5" />
+                Atrás
+              </Button>
+            </div>
+          </div>
+
+          {/* Banner de Empresa Seleccionada con opción de cambiar */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3 rounded-xl border border-primary/20 bg-primary/5 text-xs">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Building2 className="h-4 w-4 text-primary shrink-0" />
+              <span className="font-bold text-foreground">Empresa activa: {activeCompany?.name}</span>
+              {activeCompany?.nit && (
+                <span className="font-mono text-muted-foreground">({activeCompany.nit})</span>
+              )}
+              <span className="text-muted-foreground/50">·</span>
+              <span className="text-muted-foreground">{selectedPeriod}</span>
+              <Badge variant="outline" className="text-[10px] font-mono border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-500/10">
+                PUC 11100501
+              </Badge>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setStep('select')}
+              className="h-7 text-[11px] gap-1 self-start sm:self-auto border-primary/30 text-primary hover:bg-primary/10"
+            >
+              <RotateCcw className="h-3 w-3" />
+              Cambiar Empresa
             </Button>
           </div>
 
@@ -1124,6 +1577,31 @@ export default function NewReconciliationPage() {
             <Button variant="ghost" size="sm" onClick={() => setStep('upload')} className="text-xs gap-1.5">
               <ArrowLeft className="h-3.5 w-3.5" />
               Volver a Archivos
+            </Button>
+          </div>
+
+          {/* Banner de Empresa Seleccionada */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3 rounded-xl border border-primary/20 bg-primary/5 text-xs">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Building2 className="h-4 w-4 text-primary shrink-0" />
+              <span className="font-bold text-foreground">Empresa activa: {activeCompany?.name}</span>
+              {activeCompany?.nit && (
+                <span className="font-mono text-muted-foreground">({activeCompany.nit})</span>
+              )}
+              <span className="text-muted-foreground/50">·</span>
+              <span className="text-muted-foreground">{selectedPeriod}</span>
+              <Badge variant="outline" className="text-[10px] font-mono border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-500/10">
+                PUC 11100501
+              </Badge>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setStep('select')}
+              className="h-7 text-[11px] gap-1 self-start sm:self-auto border-primary/30 text-primary hover:bg-primary/10"
+            >
+              <RotateCcw className="h-3 w-3" />
+              Cambiar Empresa
             </Button>
           </div>
 

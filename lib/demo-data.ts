@@ -2,6 +2,18 @@ import { Company, MatchRow, Reconciliation } from './types';
 
 const demoOwnerId = 'demo-user';
 
+export const CAMAGUEY_COMPANY: Company = {
+  id: 'company-camaguey-sa',
+  owner_id: 'user-ruby-fernandez',
+  name: 'CAMAGUEY S.A',
+  nit: '890.100.026-1',
+  contact_email: 'PROVEEDORES@CAMAGUEY.COM.CO',
+  contact_phone: '3016410377',
+  city: 'Galapa',
+  notes: 'Banco: Bancolombia S.A. | PUC: 11100501 Bancolombia Cta Cte | Asignada a: Ruby Fernandez',
+  created_at: '2026-01-20T10:00:00.000Z',
+};
+
 export const DEMO_COMPANIES: Company[] = [
   {
     id: 'demo-company-andina',
@@ -36,7 +48,67 @@ export const DEMO_COMPANIES: Company[] = [
     notes: null,
     created_at: '2026-02-21T14:00:00.000Z',
   },
+  CAMAGUEY_COMPANY,
 ];
+
+export const COMPANIES_STORAGE_KEY = 'financo_companies_storage_v1';
+
+export function getStoredCompanies(): Company[] {
+  if (typeof window === 'undefined') return DEMO_COMPANIES;
+  try {
+    const raw =
+      window.localStorage.getItem(COMPANIES_STORAGE_KEY) ||
+      window.localStorage.getItem('financo_companies') ||
+      window.sessionStorage.getItem('financo_demo_companies') ||
+      window.sessionStorage.getItem('financo_companies');
+    if (raw) {
+      const parsed: Company[] = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        // Garantizar que CAMAGUEY S.A y ICC SAS estén siempre disponibles en la lista
+        let list = [...parsed];
+        const hasCamaguey = list.some(
+          (c) =>
+            c.id === CAMAGUEY_COMPANY.id ||
+            c.name.toUpperCase().includes('CAMAGUEY') ||
+            (c.nit && c.nit.replace(/\D/g, '').includes('890100026'))
+        );
+        if (!hasCamaguey) {
+          list = [CAMAGUEY_COMPANY, ...list];
+        }
+
+        const hasIcc = list.some(
+          (c) =>
+            c.id === DEMO_COMPANIES[0].id ||
+            c.name.toUpperCase().includes('INGENIEROS CONSULTORES') ||
+            c.name.toUpperCase().includes('ICC')
+        );
+        if (!hasIcc) {
+          list.push(DEMO_COMPANIES[0]);
+        }
+
+        return list;
+      }
+    }
+  } catch (e) {
+    console.warn('Error leyendo empresas almacenadas', e);
+  }
+  return DEMO_COMPANIES;
+}
+
+export function saveStoredCompanies(companies: Company[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const data = JSON.stringify(companies);
+    window.localStorage.setItem(COMPANIES_STORAGE_KEY, data);
+    window.localStorage.setItem('financo_companies', data);
+    window.sessionStorage.setItem('financo_demo_companies', data);
+    window.sessionStorage.setItem('financo_companies', data);
+    // Disparar evento para sincronizar pestañas y componentes en vivo
+    window.dispatchEvent(new CustomEvent('financo_companies_updated', { detail: companies }));
+  } catch (e) {
+    console.warn('Error guardando empresas almacenadas', e);
+  }
+}
 
 export type DemoReconciliation = Reconciliation & { companies: { name: string } };
 export interface DemoRun {
@@ -238,6 +310,46 @@ export const DEMO_RECONCILIATIONS: DemoReconciliation[] = [
     settings: { tolerancePercent: 1, enableFuzzy: true, checkDuplicates: true },
     created_at: '2026-09-27T13:45:00.000Z',
     companies: { name: DEMO_COMPANIES[2].name },
+  },
+  {
+    id: 'demo-reconciliation-camaguey',
+    owner_id: 'user-ruby-fernandez',
+    company_id: CAMAGUEY_COMPANY.id,
+    bank_upload_id: 'demo-bank-camaguey',
+    ledger_upload_id: 'demo-ledger-camaguey',
+    status: 'completed',
+    tolerance_percent: 0,
+    total_bank_rows: 54,
+    total_ledger_rows: 52,
+    total_reconciled: 52,
+    total_exceptions: 2,
+    total_suggestions: 0,
+    total_amount_reconciled: 48500000,
+    auto_percentage: 96.3,
+    metadata: {
+      companyName: 'CAMAGUEY S.A',
+      companyNit: '890.100.026-1',
+      period: 'Enero 2026',
+      ledgerAccount: '11100501 Bancolombia Cta Cte',
+      bankEntity: 'Bancolombia S.A.',
+    },
+    statement: {
+      bankStatementBalance: 124800000,
+      depositsInTransit: 0,
+      paymentsInTransit: 0,
+      adjustedBankBalance: 124800000,
+      ledgerBalance: 124800000,
+      unrecordedCreditNotes: 0,
+      unrecordedDebitNotes: 0,
+      openingDifference: 0,
+      adjustedLedgerBalance: 124800000,
+      finalDifference: 0,
+      statementNetMovement: 48500000,
+      differenceBeforeItems: 0,
+    },
+    settings: { tolerancePercent: 0, enableFuzzy: true, checkDuplicates: true },
+    created_at: '2026-01-28T16:00:00.000Z',
+    companies: { name: 'CAMAGUEY S.A' },
   },
 ];
 

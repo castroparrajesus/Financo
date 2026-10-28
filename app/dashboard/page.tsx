@@ -29,7 +29,7 @@ import { Progress } from '@/components/ui/progress';
 import { formatCOP, formatDateTime, formatDate } from '@/lib/format';
 import { PLAN_LIMITS, ReconciliationStatement, ReconciliationMetadata } from '@/lib/types';
 import { useAuth } from '@/lib/supabase/auth-context';
-import { DEMO_COMPANIES, DEMO_RECONCILIATIONS, getDemoRuns } from '@/lib/demo-data';
+import { DEMO_COMPANIES, DEMO_RECONCILIATIONS, getDemoRuns, getStoredCompanies } from '@/lib/demo-data';
 import {
   ResponsiveContainer,
   BarChart,
@@ -87,7 +87,12 @@ export default function DashboardHome() {
 
   useEffect(() => {
     async function loadData() {
-      if (isDemo) {
+      const isSupabaseConfigured = () => {
+        const url = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+        return url.length > 0 && !url.includes('placeholder-project');
+      };
+
+      if (isDemo || !isSupabaseConfigured()) {
         let savedRuns: RecentRecon[] = [];
         try {
           savedRuns = getDemoRuns().map((run) => run.reconciliation as unknown as RecentRecon);
@@ -95,6 +100,7 @@ export default function DashboardHome() {
           savedRuns = [];
         }
         const recons = [...savedRuns, ...DEMO_RECONCILIATIONS as unknown as RecentRecon[]];
+        const companies = getStoredCompanies();
 
         const totalReconciled = recons.reduce((sum, r) => sum + (r.total_reconciled || 0), 0);
         const totalExceptions = recons.reduce((sum, r) => sum + (r.total_exceptions || 0), 0);
@@ -113,7 +119,7 @@ export default function DashboardHome() {
           totalExceptions,
           totalSuggestions,
           totalAmount,
-          companyCount: DEMO_COMPANIES.length,
+          companyCount: companies.length,
           avgAutomation,
           balancedCount,
         });
