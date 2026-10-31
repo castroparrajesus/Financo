@@ -35,9 +35,23 @@ export interface Profile {
   data_consent_user_agent?: string;
 }
 
+export type CompanyRole = 'owner' | 'admin' | 'editor' | 'viewer';
+
+export interface CompanyMember {
+  id?: string;
+  company_id: string;
+  user_id: string;
+  role: CompanyRole;
+  created_at?: string;
+  email?: string;
+  full_name?: string;
+  status?: 'active' | 'pending';
+}
+
 export interface Company {
   id: string;
-  owner_id: string;
+  owner_id?: string;
+  user_id?: string;
   name: string;
   nit: string | null;
   contact_email: string | null;
@@ -45,6 +59,7 @@ export interface Company {
   city: string | null;
   notes: string | null;
   created_at: string;
+  user_role?: CompanyRole;
 }
 
 export interface BankProfile {
@@ -70,6 +85,8 @@ export interface Upload {
   file_format: 'xlsx' | 'xls' | 'csv';
   row_count: number;
   storage_path: string | null;
+  sha256_hex?: string | null;
+  detected_bank?: string | null;
   parsed_data: Record<string, unknown>[] | null;
   auto_delete_at: string | null;
   created_at: string;
@@ -235,6 +252,10 @@ export interface ReconciliationMetadata {
   ledgerTotalCredits?: number;
   accountMatchWarning?: string | null;
   availableAccounts?: AccountSection[];
+  bankFileHash?: string;
+  ledgerFileHash?: string;
+  bankFileSizeBytes?: number;
+  ledgerFileSizeBytes?: number;
 }
 
 export interface MatchResult {

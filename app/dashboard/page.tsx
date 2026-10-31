@@ -29,7 +29,7 @@ import { Progress } from '@/components/ui/progress';
 import { formatCOP, formatDateTime, formatDate } from '@/lib/format';
 import { PLAN_LIMITS, ReconciliationStatement, ReconciliationMetadata } from '@/lib/types';
 import { useAuth } from '@/lib/supabase/auth-context';
-import { DEMO_COMPANIES, DEMO_RECONCILIATIONS, getDemoRuns, getStoredCompanies } from '@/lib/demo-data';
+import { DEMO_COMPANIES, DEMO_RECONCILIATIONS, getDemoRuns, getDemoCompanies, getDemoReconciliationsForUser } from '@/lib/demo-data';
 import {
   ResponsiveContainer,
   BarChart,
@@ -56,6 +56,7 @@ interface DashboardStats {
 
 interface RecentRecon {
   id: string;
+  company_id?: string;
   created_at: string;
   total_bank_rows: number;
   total_ledger_rows: number;
@@ -92,15 +93,27 @@ export default function DashboardHome() {
         return url.length > 0 && !url.includes('placeholder-project');
       };
 
+      const currentUserId = user?.id || (isDemo ? 'demo-user' : null);
+
       if (isDemo || !isSupabaseConfigured()) {
         let savedRuns: RecentRecon[] = [];
         try {
-          savedRuns = getDemoRuns().map((run) => run.reconciliation as unknown as RecentRecon);
+          savedRuns = getDemoRuns(currentUserId).map((run) => run.reconciliation as unknown as RecentRecon);
         } catch {
           savedRuns = [];
         }
-        const recons = [...savedRuns, ...DEMO_RECONCILIATIONS as unknown as RecentRecon[]];
-        const companies = getStoredCompanies();
+        const defaultRecons = (getDemoReconciliationsForUser(user?.email || currentUserId) as unknown as RecentRecon[]);
+        const allRecons = [...savedRuns, ...defaultRecons];
+        const companies = getDemoCompanies();
+
+        // Filtrar conciliaciones para que coincidan únicamente con empresas activas del usuario
+        const activeNames = new Set(companies.map((c) => c.name.trim().toUpperCase()));
+        const activeIds = new Set(companies.map((c) => c.id));
+        const recons = allRecons.filter((r) => {
+          const compName = (r.metadata?.companyName || r.companies?.name || '').trim().toUpperCase();
+          const compId = r.company_id;
+          return (compId && activeIds.has(compId)) || activeNames.has(compName);
+        });
 
         const totalReconciled = recons.reduce((sum, r) => sum + (r.total_reconciled || 0), 0);
         const totalExceptions = recons.reduce((sum, r) => sum + (r.total_exceptions || 0), 0);
@@ -135,11 +148,20 @@ export default function DashboardHome() {
           .order('created_at', { ascending: false })
           .limit(15);
 
-        const { count: companyCount } = await supabase
+        const { data: userCompanies } = await supabase
           .from('companies')
-          .select('*', { count: 'exact', head: true });
+          .select('id, name');
 
-        const recons = (reconData || []) as unknown as RecentRecon[];
+        const userCompanyList = (userCompanies || []) as { id: string; name: string }[];
+        const activeNames = new Set(userCompanyList.map((c) => c.name.trim().toUpperCase()));
+        const activeIds = new Set(userCompanyList.map((c) => c.id));
+        const allRecons = (reconData || []) as unknown as RecentRecon[];
+        const recons = allRecons.filter((r) => {
+          const compName = (r.metadata?.companyName || r.companies?.name || '').trim().toUpperCase();
+          const compId = r.company_id;
+          return (compId && activeIds.has(compId)) || activeNames.has(compName);
+        });
+
         const totalReconciled = recons.reduce((sum, r) => sum + (r.total_reconciled || 0), 0);
         const totalExceptions = recons.reduce((sum, r) => sum + (r.total_exceptions || 0), 0);
         const totalSuggestions = recons.reduce((sum, r) => sum + (r.total_suggestions || 0), 0);
@@ -157,7 +179,7 @@ export default function DashboardHome() {
           totalExceptions,
           totalSuggestions,
           totalAmount,
-          companyCount: companyCount || 0,
+          companyCount: userCompanyList.length,
           avgAutomation,
           balancedCount,
         });
@@ -169,7 +191,17 @@ export default function DashboardHome() {
       }
     }
     loadData();
-  }, [isDemo]);
+
+    const handleSync = () => {
+      loadData();
+    };
+    window.addEventListener('financo_companies_updated', handleSync);
+    window.addEventListener('financo_companies_deleted', handleSync);
+    return () => {
+      window.removeEventListener('financo_companies_updated', handleSync);
+      window.removeEventListener('financo_companies_deleted', handleSync);
+    };
+  }, [isDemo, user?.id, user?.email]);
 
   const planLimit = profile ? PLAN_LIMITS[profile.plan]?.companies : 5;
   const planLabel = profile ? PLAN_LIMITS[profile.plan]?.label : 'Esencial';

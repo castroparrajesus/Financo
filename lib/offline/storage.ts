@@ -34,7 +34,7 @@ export interface CachedReconciliationFull {
 const DB_NAME = 'financo_offline_db';
 const DB_VERSION = 1;
 const STORE_NAME = 'reconciliations_v1';
-const LS_FALLBACK_KEY = 'financo_cached_reconciliations_fallback';
+const SESSION_FALLBACK_KEY = 'financo_cached_reconciliations_session_v1';
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -95,14 +95,14 @@ export async function saveReconciliationOffline(
       req.onerror = () => reject(req.error);
     });
   } catch (err) {
-    // Fallback to localStorage if IndexedDB is blocked (e.g., in strict private browsing)
+    // Fallback to sessionStorage if IndexedDB is blocked
     try {
-      const existingStr = localStorage.getItem(LS_FALLBACK_KEY);
+      const existingStr = sessionStorage.getItem(SESSION_FALLBACK_KEY);
       const map: Record<string, CachedReconciliationFull> = existingStr ? JSON.parse(existingStr) : {};
       map[recon.id] = payload;
-      localStorage.setItem(LS_FALLBACK_KEY, JSON.stringify(map));
+      sessionStorage.setItem(SESSION_FALLBACK_KEY, JSON.stringify(map));
     } catch {
-      console.warn('Could not persist reconciliation to local storage cache');
+      console.warn('Could not persist reconciliation to session cache');
     }
   }
 }
@@ -129,7 +129,7 @@ export async function getReconciliationOffline(id: string): Promise<CachedReconc
   }
 
   try {
-    const existingStr = localStorage.getItem(LS_FALLBACK_KEY);
+    const existingStr = sessionStorage.getItem(SESSION_FALLBACK_KEY);
     if (existingStr) {
       const map: Record<string, CachedReconciliationFull> = JSON.parse(existingStr);
       if (map[id]) return map[id];
@@ -180,7 +180,7 @@ export async function listCachedReconciliations(): Promise<CachedReconciliationS
   }
 
   try {
-    const existingStr = localStorage.getItem(LS_FALLBACK_KEY);
+    const existingStr = sessionStorage.getItem(SESSION_FALLBACK_KEY);
     if (existingStr) {
       const map: Record<string, CachedReconciliationFull> = JSON.parse(existingStr);
       for (const record of Object.values(map)) {
@@ -225,11 +225,11 @@ export async function deleteReconciliationOffline(id: string): Promise<void> {
   }
 
   try {
-    const existingStr = localStorage.getItem(LS_FALLBACK_KEY);
+    const existingStr = sessionStorage.getItem(SESSION_FALLBACK_KEY);
     if (existingStr) {
       const map = JSON.parse(existingStr);
       delete map[id];
-      localStorage.setItem(LS_FALLBACK_KEY, JSON.stringify(map));
+      sessionStorage.setItem(SESSION_FALLBACK_KEY, JSON.stringify(map));
     }
   } catch {
     // ignore
@@ -256,7 +256,8 @@ export async function clearAllOfflineCache(): Promise<void> {
   }
 
   try {
-    localStorage.removeItem(LS_FALLBACK_KEY);
+    sessionStorage.removeItem(SESSION_FALLBACK_KEY);
+    localStorage.removeItem('financo_cached_reconciliations_fallback');
   } catch {
     // ignore
   }
@@ -270,13 +271,12 @@ export async function getOfflineStorageMetrics(): Promise<{ count: number; estim
   let totalBytes = 0;
 
   try {
-    const str = localStorage.getItem(LS_FALLBACK_KEY);
+    const str = sessionStorage.getItem(SESSION_FALLBACK_KEY);
     if (str) totalBytes += str.length;
   } catch {
     // ignore
   }
 
-  // rough estimate: ~15KB per cached reconciliation with 100 movements
   const estimatedKb = Math.max(1, Math.round((items.length * 18000 + totalBytes) / 1024));
 
   return {

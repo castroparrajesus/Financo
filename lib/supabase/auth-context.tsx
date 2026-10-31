@@ -613,6 +613,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signOut = async () => {
     safeStorage.removeItem(DEMO_SESSION_KEY);
     safeStorage.removeItem(ACTIVE_LOCAL_USER_KEY);
+    if (typeof window !== 'undefined') {
+      try {
+        window.sessionStorage.clear();
+        window.dispatchEvent(new CustomEvent('financo_companies_updated'));
+      } catch {
+        // Ignore
+      }
+    }
     if (isSupabaseConfigured()) {
       try {
         await supabase.auth.signOut();

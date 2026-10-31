@@ -8,6 +8,13 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.cjs",
+    "test:unit": "node --test tests/bank-header-detector.test.cjs tests/hash-history-persistence.unit.test.cjs tests/reconciliation-engine.test.cjs tests/mfa-crypto.unit.test.cjs tests/mfa-rls-logic.unit.test.cjs tests/multiuser-roles.unit.test.cjs",
+    "test:integration": "node --test tests/supabase-uploads.integration.test.cjs tests/supabase-mfa-live.integration.test.cjs tests/supabase-multiuser.integration.test.cjs",
+    "test:mfa": "node --test tests/mfa-crypto.unit.test.cjs tests/mfa-rls-logic.unit.test.cjs tests/supabase-mfa-live.integration.test.cjs",
+    "test:multiuser": "node --test tests/multiuser-roles.unit.test.cjs tests/supabase-multiuser.integration.test.cjs",
+    "test:header": "node --test tests/bank-header-detector.test.cjs",
+    "test:persistence": "node --test tests/hash-history-persistence.unit.test.cjs",
     "test:engine": "node --test tests/reconciliation-engine.test.cjs"
   },
   "dependencies": {

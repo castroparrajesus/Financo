@@ -25,7 +25,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { formatCOP, formatDateTime } from '@/lib/format';
 import { Reconciliation } from '@/lib/types';
-import { DEMO_RECONCILIATIONS, getDemoRuns } from '@/lib/demo-data';
+import { DEMO_RECONCILIATIONS, getDemoRuns, getDemoCompanies } from '@/lib/demo-data';
 import { useAuth } from '@/lib/supabase/auth-context';
 import { listCachedReconciliations } from '@/lib/offline/storage';
 import { OfflineCedulasDialog } from '@/components/pwa/offline-cedulas-dialog';
@@ -85,8 +85,17 @@ export default function ReconciliationsListPage() {
       }
 
       if (isDemo) {
+        const activeCompanies = getDemoCompanies();
+        const activeNames = new Set(activeCompanies.map((c) => c.name.trim().toUpperCase()));
+        const activeIds = new Set(activeCompanies.map((c) => c.id));
         const demoRuns = getDemoRuns().map((run) => run.reconciliation);
-        setRecons([...demoRuns, ...DEMO_RECONCILIATIONS]);
+        const all = [...demoRuns, ...DEMO_RECONCILIATIONS];
+        const filtered = all.filter((r) => {
+          const compName = (r.metadata?.companyName || r.companies?.name || '').trim().toUpperCase();
+          const compId = r.company_id;
+          return activeIds.has(compId) || activeNames.has(compName);
+        });
+        setRecons(filtered);
         setLoading(false);
         return;
       }
@@ -104,7 +113,7 @@ export default function ReconciliationsListPage() {
             setRecons(cached.map(mapCachedToRecon));
           }
         } else {
-          setRecons(data as ReconWithCompany[]);
+          setRecons((data as ReconWithCompany[]) || []);
         }
       } catch {
         const cached = await listCachedReconciliations();
@@ -116,6 +125,16 @@ export default function ReconciliationsListPage() {
       setLoading(false);
     }
     load();
+
+    const handleSync = () => {
+      load();
+    };
+    window.addEventListener('financo_companies_updated', handleSync);
+    window.addEventListener('financo_companies_deleted', handleSync);
+    return () => {
+      window.removeEventListener('financo_companies_updated', handleSync);
+      window.removeEventListener('financo_companies_deleted', handleSync);
+    };
   }, [isDemo]);
 
   // Overall statistics for the summary strip

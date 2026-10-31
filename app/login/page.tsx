@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft, Mail, Lock, Eye, EyeOff, KeyRound } from 'lucide-react';
 import { useAuth } from '@/lib/supabase/auth-context';
+import { supabase } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -47,6 +48,20 @@ export default function LoginPage() {
     if (error) {
       toast.error(error);
     } else {
+      // Verificación de Nivel de Seguridad (AAL1 vs AAL2)
+      try {
+        const aalRes = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+        const hasDemoMfa = typeof window !== 'undefined' && window.sessionStorage.getItem('financo_demo_mfa_active') === 'true';
+
+        if ((aalRes.data?.nextLevel === 'aal2' && aalRes.data?.currentLevel === 'aal1') || hasDemoMfa) {
+          toast.info('Se requiere verificación de segundo factor (TOTP).');
+          router.push('/login/mfa');
+          return;
+        }
+      } catch {
+        // Continuar si Supabase no está configurado
+      }
+
       toast.success('Sesión iniciada correctamente');
       router.push('/dashboard');
     }

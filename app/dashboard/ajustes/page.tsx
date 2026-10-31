@@ -47,6 +47,7 @@ import { PWAInstallButton } from '@/components/pwa/pwa-install-button';
 import { OfflineCedulasDialog } from '@/components/pwa/offline-cedulas-dialog';
 import { OfflinePolicyDialog } from '@/components/pwa/offline-policy-dialog';
 import { getOfflineStorageMetrics, clearAllOfflineCache } from '@/lib/offline/storage';
+import { EnrollMFA } from '@/components/mfa/enroll-mfa';
 
 export default function SettingsPage() {
   const { user, profile, refreshProfile, changePassword, isDemo } = useAuth();
@@ -361,6 +362,8 @@ Superintendencia de Industria y Comercio (SIC).
         {/* PESTAÑA 2: SEGURIDAD Y ACCESO PRIVADO               */}
         {/* ---------------------------------------------------- */}
         <TabsContent value="security" className="space-y-6 mt-0">
+          <EnrollMFA />
+
           <Card className="border-border/80 shadow-xs">
             <CardHeader className="bg-muted/20 border-b pb-3">
               <CardTitle className="text-sm font-semibold flex items-center gap-2">

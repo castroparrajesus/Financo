@@ -63,13 +63,19 @@ import { detectColumns, normalizeRows, reconcile, ColumnMapping } from '@/lib/re
 import { Company, NormalizedRow, MatchResult, ReconciliationMetadata, HumanStatus } from '@/lib/types';
 import {
   DEMO_COMPANIES,
-  CAMAGUEY_COMPANY,
+  DEMO_USER_COMPANY,
   DemoReconciliation,
   saveDemoRun,
-  getStoredCompanies,
-  saveStoredCompanies,
+  getDemoCompanies,
+  saveDemoCompanies,
 } from '@/lib/demo-data';
 import { saveReconciliationOffline } from '@/lib/offline/storage';
+import {
+  computeFileSHA256,
+  validateFileSize,
+  FileVerificationResult,
+} from '@/lib/crypto/file-integrity';
+import { FileVerifiedBadge } from '@/components/reconciliation/file-verified-badge';
 
 type Step = 'select' | 'upload' | 'configure' | 'processing';
 
@@ -80,17 +86,7 @@ interface FileData {
   totalRows: number;
   metadata?: ReconciliationMetadata;
   hash?: string;
-}
-
-async function computeFileSha256(file: File): Promise<string> {
-  try {
-    const buffer = await file.arrayBuffer();
-    const digest = await window.crypto.subtle.digest('SHA-256', buffer);
-    const hashArray = Array.from(new Uint8Array(digest));
-    return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
-  } catch {
-    return `hash-${file.name}-${file.size}-${file.lastModified}`;
-  }
+  verification?: FileVerificationResult;
 }
 
 export default function NewReconciliationPage() {
@@ -100,14 +96,8 @@ export default function NewReconciliationPage() {
 
   const { user, isDemo, profile } = useAuth();
   const [step, setStep] = useState<Step>('select');
-  // Carga inicial inmediata de empresas disponibles
-  const [companies, setCompanies] = useState<Company[]>(() => {
-    if (typeof window !== 'undefined') {
-      const stored = getStoredCompanies();
-      if (stored && stored.length > 0) return stored;
-    }
-    return [CAMAGUEY_COMPANY, ...DEMO_COMPANIES];
-  });
+  // Carga inicial privada por usuario
+  const [companies, setCompanies] = useState<Company[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<string>(initialCompanyId || '');
   const [selectedPeriod, setSelectedPeriod] = useState<string>('Enero 2026');
   const [companySearch, setCompanySearch] = useState('');
@@ -142,54 +132,37 @@ export default function NewReconciliationPage() {
     return url.length > 0 && !url.includes('placeholder-project');
   }, []);
 
-  // Carga resiliente e inmediata de empresas
+  // Carga privada de empresas: Supabase para cuenta real, sessionStorage para demo
   const loadCompanies = useCallback(async () => {
-    // 1. Cargar almacenamiento local siempre primero
-    const local = getStoredCompanies();
-    const isRuby =
-      user?.email?.toLowerCase().includes('ruby') ||
-      profile?.full_name?.toLowerCase().includes('ruby');
+    if (isDemo) {
+      const demoList = getDemoCompanies();
+      setCompanies(demoList);
+      setLoadingCompanies(false);
+      return;
+    }
 
-    // Ordenar de forma que CAMAGUEY S.A y ICC SAS aparezcan de primeras
-    const sorted = [...local].sort((a, b) => {
-      const aIsCamaguey = a.id === CAMAGUEY_COMPANY.id || a.name.toUpperCase().includes('CAMAGUEY');
-      const bIsCamaguey = b.id === CAMAGUEY_COMPANY.id || b.name.toUpperCase().includes('CAMAGUEY');
-      if (aIsCamaguey && !bIsCamaguey) return -1;
-      if (!aIsCamaguey && bIsCamaguey) return 1;
-      return 0;
-    });
-
-    setCompanies(sorted);
-    setLoadingCompanies(false);
-
-    // 2. Consulta en segundo plano con Supabase si está activo
-    if (!isDemo && isSupabaseConfigured()) {
+    if (isSupabaseConfigured()) {
       try {
         const { data, error } = await supabase
           .from('companies')
           .select('*')
           .order('name', { ascending: true });
-        if (!error && data && data.length > 0) {
-          const merged = [...sorted];
-          (data as Company[]).forEach((remoteComp) => {
-            if (
-              !merged.some(
-                (c) =>
-                  c.id === remoteComp.id ||
-                  (c.nit && remoteComp.nit && c.nit.replace(/\D/g, '') === remoteComp.nit.replace(/\D/g, ''))
-              )
-            ) {
-              merged.push(remoteComp);
-            }
-          });
-          setCompanies(merged);
-          saveStoredCompanies(merged);
+        if (!error && Array.isArray(data)) {
+          setCompanies(data as Company[]);
+        } else {
+          setCompanies([]);
         }
       } catch (err) {
-        console.warn('Supabase no disponible, usando almacenamiento local.', err);
+        console.warn('Error al cargar empresas desde Supabase:', err);
+        setCompanies([]);
+      } finally {
+        setLoadingCompanies(false);
       }
+    } else {
+      setCompanies([]);
+      setLoadingCompanies(false);
     }
-  }, [isDemo, isSupabaseConfigured, user, profile]);
+  }, [isDemo, isSupabaseConfigured]);
 
   // Cargar al montar el componente de inmediato y escuchar eventos
   useEffect(() => {
@@ -200,9 +173,11 @@ export default function NewReconciliationPage() {
     };
 
     window.addEventListener('financo_companies_updated', handleSync);
+    window.addEventListener('financo_companies_deleted', handleSync);
     window.addEventListener('storage', handleSync);
     return () => {
       window.removeEventListener('financo_companies_updated', handleSync);
+      window.removeEventListener('financo_companies_deleted', handleSync);
       window.removeEventListener('storage', handleSync);
     };
   }, [loadCompanies]);
@@ -241,41 +216,98 @@ export default function NewReconciliationPage() {
     }
 
     const cleanNit = quickForm.nit.replace(/[^\d-]/g, '');
-    const newCompany: Company = {
-      id: `company-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      owner_id: user?.id || 'user-ruby-fernandez',
-      name: trimmedName,
-      nit: cleanNit || '901.000.000-1',
-      contact_email: quickForm.contact_email?.trim() || null,
-      contact_phone: quickForm.contact_phone?.trim() || null,
-      city: quickForm.city || 'Galapa',
-      notes: `Banco: ${quickForm.bankName} | PUC: ${quickForm.ledgerAccount}`,
-      created_at: new Date().toISOString(),
-    };
 
-    const updated = [newCompany, ...companies];
-    setCompanies(updated);
-    saveStoredCompanies(updated);
-    setSelectedCompany(newCompany.id);
-    setQuickCreateOpen(false);
-    setQuickForm({
-      name: '',
-      nit: '',
-      city: 'Galapa',
-      contact_email: '',
-      contact_phone: '',
-      bankName: 'Bancolombia S.A.',
-      ledgerAccount: '11100501 Bancolombia Cta Cte',
-    });
-    toast.success(`¡Empresa "${trimmedName}" registrada y seleccionada para conciliar!`);
+    if (isDemo) {
+      const newCompany: Company = {
+        id: `company-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        owner_id: 'demo-user',
+        user_id: 'demo-user',
+        name: trimmedName,
+        nit: cleanNit || '901.000.000-1',
+        contact_email: quickForm.contact_email?.trim() || null,
+        contact_phone: quickForm.contact_phone?.trim() || null,
+        city: quickForm.city || 'Bogotá D.C.',
+        notes: `Banco: ${quickForm.bankName} | PUC: ${quickForm.ledgerAccount}`,
+        created_at: new Date().toISOString(),
+      };
+
+      const updated = [newCompany, ...companies];
+      setCompanies(updated);
+      saveDemoCompanies(updated);
+      setSelectedCompany(newCompany.id);
+      setQuickCreateOpen(false);
+      setQuickForm({
+        name: '',
+        nit: '',
+        city: 'Galapa',
+        contact_email: '',
+        contact_phone: '',
+        bankName: 'Bancolombia S.A.',
+        ledgerAccount: '11100501 Bancolombia Cta Cte',
+      });
+      toast.success(`¡Empresa "${trimmedName}" registrada y seleccionada para conciliar!`);
+      return;
+    }
+
+    // Cuenta Real: Guardar en Supabase
+    if (isSupabaseConfigured()) {
+      (async () => {
+        try {
+          const { data: newRow, error } = await supabase
+            .from('companies')
+            .insert({
+              user_id: user?.id,
+              name: trimmedName,
+              nit: cleanNit || '901.000.000-1',
+              contact_email: quickForm.contact_email?.trim() || null,
+              contact_phone: quickForm.contact_phone?.trim() || null,
+              city: quickForm.city || 'Bogotá D.C.',
+              notes: `Banco: ${quickForm.bankName} | PUC: ${quickForm.ledgerAccount}`,
+            })
+            .select()
+            .single();
+
+          if (error) {
+            toast.error('Error al registrar empresa en Supabase: ' + error.message);
+            return;
+          }
+
+          if (newRow) {
+            const updated = [newRow as Company, ...companies];
+            setCompanies(updated);
+            setSelectedCompany(newRow.id);
+            setQuickCreateOpen(false);
+            setQuickForm({
+              name: '',
+              nit: '',
+              city: 'Galapa',
+              contact_email: '',
+              contact_phone: '',
+              bankName: 'Bancolombia S.A.',
+              ledgerAccount: '11100501 Bancolombia Cta Cte',
+            });
+            toast.success(`¡Empresa "${trimmedName}" registrada en Supabase!`);
+          }
+        } catch (err) {
+          console.error('Error creando empresa en Supabase:', err);
+          toast.error('Error al registrar la empresa');
+        }
+      })();
+    } else {
+      toast.error('Supabase no está configurado para la cuenta real');
+    }
   };
 
   const handleRestoreDemoCompanies = () => {
-    const list = [CAMAGUEY_COMPANY, ...DEMO_COMPANIES];
-    saveStoredCompanies(list);
-    setCompanies(list);
-    setSelectedCompany(list[0].id);
-    toast.success('Empresas oficiales restauradas (CAMAGUEY S.A y ICC S.A.S.)');
+    if (isDemo) {
+      const list = [DEMO_USER_COMPANY];
+      saveDemoCompanies(list);
+      setCompanies(list);
+      setSelectedCompany(list[0].id);
+      toast.success('Empresa demostrativa restaurada en la sesión');
+    } else {
+      toast.info('Tu cuenta es privada. Puedes registrar tus empresas clientes directamente.');
+    }
   };
 
   const handleStartStep = () => {
@@ -287,8 +319,17 @@ export default function NewReconciliationPage() {
   };
 
   const handleFileUpload = async (file: File, type: 'bank' | 'ledger', showToast = true): Promise<boolean> => {
+    // 1. Validar límite de 25 MB con mensaje amigable en español
+    const sizeCheck = validateFileSize(file);
+    if (!sizeCheck.valid) {
+      toast.error(sizeCheck.error);
+      return false;
+    }
+
     try {
-      const fileHash = await computeFileSha256(file);
+      // 2. Cómputo criptográfico de integridad SHA-256 en navegador
+      const verification = await computeFileSHA256(file);
+      const fileHash = verification.sha256Hex;
       const sessionKey = `financo_hash_${type}_${fileHash}`;
 
       if (typeof window !== 'undefined' && window.sessionStorage.getItem(sessionKey)) {
@@ -300,9 +341,10 @@ export default function NewReconciliationPage() {
         window.sessionStorage.setItem(sessionKey, new Date().toISOString());
       }
 
+      // 3. Parseo inteligente con detector dinámico de cabeceras bancarias
       const parsed = await parseFile(file);
       if (parsed.totalRows === 0) {
-        if (showToast) toast.error('El archivo no contiene filas con datos válidos');
+        if (showToast) toast.error('El archivo no contiene filas con datos contables válidos');
         return false;
       }
       const detected = detectColumns(parsed.headers);
@@ -315,6 +357,7 @@ export default function NewReconciliationPage() {
         totalRows: parsed.totalRows,
         metadata: parsed.metadata,
         hash: fileHash,
+        verification,
       };
 
       if (type === 'bank') {
@@ -325,12 +368,15 @@ export default function NewReconciliationPage() {
         setLedgerMapping(detected);
       }
       if (showToast) {
-        toast.success(`${file.name} cargado (${fileData.totalRows} filas · Hash SHA-256 verificado)`);
+        toast.success(
+          `${file.name} verificado con éxito (${fileData.totalRows} movimientos · Integridad SHA-256 confirmada)`
+        );
       }
       return true;
-    } catch (err) {
+    } catch (err: any) {
       console.error(`Error al procesar el archivo ${file.name}.`, err);
-      if (showToast) toast.error('Error al procesar el archivo');
+      const msg = err?.message || 'Error al procesar el archivo contable';
+      if (showToast) toast.error(msg);
       return false;
     }
   };
@@ -369,7 +415,7 @@ export default function NewReconciliationPage() {
     if (!isDemo || loadingDemoFiles) return;
 
     setLoadingDemoFiles(true);
-    setSelectedCompany(companies[0]?.id || DEMO_COMPANIES[0].id);
+    setSelectedCompany(companies[0]?.id || DEMO_USER_COMPANY.id);
     try {
       const [bankLoaded, ledgerLoaded] = await Promise.all([
         loadSample('bank', false),
@@ -380,7 +426,7 @@ export default function NewReconciliationPage() {
         return;
       }
       setStep('configure');
-      toast.success('Archivos de Bancolombia e ICC S.A.S. listos. Revisa las columnas antes de ejecutar.');
+      toast.success('Archivos de ejemplo cargados. Revisa las columnas antes de ejecutar.');
     } finally {
       setLoadingDemoFiles(false);
     }
@@ -419,8 +465,8 @@ export default function NewReconciliationPage() {
         enableFuzzy,
         checkDuplicates,
         metadata: {
-          companyName: activeCompany?.name || 'INGENIEROS CONSULTORES Y CONSTRUCTORES ICC S.A.S.',
-          companyNit: activeCompany?.nit || '901883418-1',
+          companyName: activeCompany?.name || 'CAMAGUEY S.A',
+          companyNit: activeCompany?.nit || '890.100.026-1',
           period: selectedPeriod,
           ledgerAccount: '11100501 Bancolombia Cta Cte',
           ...(bankFile.metadata || {}),
@@ -431,7 +477,7 @@ export default function NewReconciliationPage() {
       const effectiveOwnerId = user?.id || 'user-ruby-fernandez';
 
       if (isDemo || !isSupabaseConfigured() || !user) {
-        const company = activeCompany || DEMO_COMPANIES[0];
+        const company = activeCompany || DEMO_USER_COMPANY;
         const reconciliationId = `recon-run-${crypto.randomUUID()}`;
         const reconciliation: DemoReconciliation = {
           id: reconciliationId,
@@ -453,9 +499,13 @@ export default function NewReconciliationPage() {
           metadata: {
             ...result.metadata,
             companyName: company.name,
-            companyNit: company.nit || '901883418-1',
+            companyNit: company.nit || '890.100.026-1',
             period: selectedPeriod,
             ledgerAccount: '11100501 Bancolombia Cta Cte',
+            bankFileHash: bankFile.hash,
+            ledgerFileHash: ledgerFile.hash,
+            bankFileSizeBytes: bankFile.file.size,
+            ledgerFileSizeBytes: ledgerFile.file.size,
           },
           groups: result.groups,
           created_at: new Date().toISOString(),
@@ -500,13 +550,16 @@ export default function NewReconciliationPage() {
         return;
       }
 
-      // En modo Cloud/Supabase
+      // En modo Cloud/Supabase: persistir uploads con sha256_hex verificado y tamaño
       const { data: bankUpload } = await supabase.from('uploads').insert({
         file_name: bankFile.file.name,
         file_type: 'bank_statement',
         file_format: bankFile.file.name.endsWith('.csv') ? 'csv' : 'xlsx',
         row_count: bankFile.totalRows,
         company_id: selectedCompany,
+        sha256_hex: bankFile.hash || null,
+        file_size_bytes: bankFile.file.size,
+        detected_bank: bankFile.metadata?.bankEntity || 'generico',
         parsed_data: bankFile.rows.slice(0, 100) as unknown,
       }).select().single();
 
@@ -516,6 +569,8 @@ export default function NewReconciliationPage() {
         file_format: ledgerFile.file.name.endsWith('.csv') ? 'csv' : 'xlsx',
         row_count: ledgerFile.totalRows,
         company_id: selectedCompany,
+        sha256_hex: ledgerFile.hash || null,
+        file_size_bytes: ledgerFile.file.size,
         parsed_data: ledgerFile.rows.slice(0, 100) as unknown,
       }).select().single();
 
@@ -546,6 +601,10 @@ export default function NewReconciliationPage() {
           companyName: activeCompany?.name,
           companyNit: activeCompany?.nit,
           period: selectedPeriod,
+          bankFileHash: bankFile.hash,
+          ledgerFileHash: ledgerFile.hash,
+          bankFileSizeBytes: bankFile.file.size,
+          ledgerFileSizeBytes: ledgerFile.file.size,
         },
         groups: result.groups,
       }).select().single();
@@ -876,7 +935,7 @@ export default function NewReconciliationPage() {
                     Selecciona la Empresa Cliente y el Período a Conciliar
                   </CardTitle>
                   <CardDescription className="text-xs">
-                    Elige la entidad jurídica registrada para generar la Cédula Oficial y papeles de trabajo NIIF
+                    Elige la entidad jurídica registrada para generar la hoja de trabajo en Excel y papeles de trabajo NIIF
                   </CardDescription>
                 </div>
 
@@ -1009,7 +1068,7 @@ export default function NewReconciliationPage() {
                       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 max-h-[380px] overflow-y-auto pr-1">
                         {filteredCompanies.map((c) => {
                           const isSelected = selectedCompany === c.id;
-                          const isCamaguey = c.id === CAMAGUEY_COMPANY.id || c.name.toUpperCase().includes('CAMAGUEY');
+                          const isCamaguey = c.name.toUpperCase().includes('CAMAGUEY');
                           const isIcc = c.name.toUpperCase().includes('ICC') || c.name.toUpperCase().includes('INGENIEROS');
 
                           return (
@@ -1195,7 +1254,7 @@ export default function NewReconciliationPage() {
                     className="text-xs h-9"
                   />
                   <p className="text-[10px] text-muted-foreground">
-                    Se utilizará en la Cédula Oficial NIIF y certificaciones de auditoría.
+                    Se utilizará en la hoja de trabajo en Excel y papeles de trabajo NIIF.
                   </p>
                 </div>
 
@@ -1379,9 +1438,9 @@ export default function NewReconciliationPage() {
                             <p className="font-semibold text-xs text-foreground">{bankFile.file.name}</p>
                             <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
                               <span>{bankFile.totalRows} movimientos detectados</span>
-                              {bankFile.hash && (
-                                <Badge variant="outline" className="font-mono text-[10px] py-0 px-1 border-emerald-500/30 text-emerald-700 dark:text-emerald-400">
-                                  SHA-256: {bankFile.hash.slice(0, 8)}...
+                              {bankFile.metadata?.bankEntity && (
+                                <Badge variant="secondary" className="text-[10px] py-0 px-1.5 font-medium">
+                                  {bankFile.metadata.bankEntity}
                                 </Badge>
                               )}
                             </div>
@@ -1396,6 +1455,13 @@ export default function NewReconciliationPage() {
                           <X className="h-4 w-4" />
                         </Button>
                       </div>
+
+                      {bankFile.verification && (
+                        <FileVerifiedBadge
+                          verification={bankFile.verification}
+                          detectedBankName={bankFile.metadata?.bankEntity}
+                        />
+                      )}
 
                       <div className="rounded-lg border border-border/60 p-3 space-y-1.5">
                         <span className="text-[11px] font-semibold text-muted-foreground block">
@@ -1493,11 +1559,6 @@ export default function NewReconciliationPage() {
                             <p className="font-semibold text-xs text-foreground">{ledgerFile.file.name}</p>
                             <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
                               <span>{ledgerFile.totalRows} asientos auxiliares</span>
-                              {ledgerFile.hash && (
-                                <Badge variant="outline" className="font-mono text-[10px] py-0 px-1 border-blue-500/30 text-blue-700 dark:text-blue-400">
-                                  SHA-256: {ledgerFile.hash.slice(0, 8)}...
-                                </Badge>
-                              )}
                             </div>
                           </div>
                         </div>
@@ -1510,6 +1571,10 @@ export default function NewReconciliationPage() {
                           <X className="h-4 w-4" />
                         </Button>
                       </div>
+
+                      {ledgerFile.verification && (
+                        <FileVerifiedBadge verification={ledgerFile.verification} />
+                      )}
 
                       <div className="rounded-lg border border-border/60 p-3 space-y-1.5">
                         <span className="text-[11px] font-semibold text-muted-foreground block">

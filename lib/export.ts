@@ -187,10 +187,10 @@ export function exportToExcel(
   const stmt = statement || recon.statement;
   const meta: ReconciliationMetadata = recon.metadata || {};
 
-  const realCompanyName = meta.companyName || companyName || 'INGENIEROS CONSULTORES Y CONSTRUCTORES ICC SAS';
-  const nit = meta.companyNit || '901883418-1';
-  const period = meta.period || 'Enero 2026';
-  const account = meta.ledgerAccount || '11100501 Bancolombia Cta Cte';
+  const realCompanyName = meta.companyName || companyName || 'Empresa';
+  const nit = meta.companyNit || '';
+  const period = meta.period || 'Periodo';
+  const account = meta.ledgerAccount || '';
 
   const groupBankRowsCount = groups
     .filter((g) => g.status === 'reconciled')
@@ -499,13 +499,10 @@ export function exportToPDF(
   const meta: ReconciliationMetadata = recon.metadata || {};
 
   // Razón social completa sin truncamientos
-  let fullCompanyName = meta.companyName || companyName || 'INGENIEROS CONSULTORES Y CONSTRUCTORES ICC S.A.S.';
-  if (fullCompanyName.includes('INGENIEROS CONSULTORES') && !fullCompanyName.includes('S.A.S.')) {
-    fullCompanyName = 'INGENIEROS CONSULTORES Y CONSTRUCTORES ICC S.A.S.';
-  }
-  const nit = meta.companyNit ? (meta.companyNit.includes('-') ? meta.companyNit : `${meta.companyNit}-1`) : '901.883.418-1';
-  const period = meta.period || 'Enero 2026';
-  const account = meta.ledgerAccount || '11100501 Bancolombia Cta Cte';
+  const fullCompanyName = meta.companyName || companyName || 'Empresa';
+  const nit = meta.companyNit ? (meta.companyNit.includes('-') ? meta.companyNit : `${meta.companyNit}-1`) : '';
+  const period = meta.period || 'Periodo';
+  const account = meta.ledgerAccount || '';
 
   // Fechas contables coherentes de cierre mensual
   const cutOffDate = '31/01/2026';

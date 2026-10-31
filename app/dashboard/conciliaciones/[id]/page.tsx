@@ -72,6 +72,7 @@ import { DEMO_MATCHES, DEMO_RECONCILIATIONS, getDemoRuns, saveDemoRun } from '@/
 import { useAuth } from '@/lib/supabase/auth-context';
 import { classifyBankMovement } from '@/lib/reconciliation/engine';
 import { saveReconciliationOffline, getReconciliationOffline } from '@/lib/offline/storage';
+import { StepUpModal } from '@/components/mfa/step-up-modal';
 
 const statusConfig = {
   reconciled: { label: 'Conciliado', icon: CheckCircle2, className: 'text-success', badge: 'default' as const },
@@ -123,6 +124,25 @@ export default function ReconciliationDetailPage() {
   // Manual linking modal state
   const [linkingBankMatch, setLinkingBankMatch] = useState<MatchRow | null>(null);
   const [linkSearchQuery, setLinkSearchQuery] = useState('');
+
+  // Step-up authentication modal state (AAL2 requirement before export)
+  const [stepUpOpen, setStepUpOpen] = useState(false);
+  const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
+
+  const requireAAL2BeforeAction = async (action: () => void) => {
+    try {
+      const aal = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      const hasDemoMfa = typeof window !== 'undefined' && window.sessionStorage.getItem('financo_demo_mfa_active') === 'true';
+      if ((aal.data?.currentLevel === 'aal1' && aal.data?.nextLevel === 'aal2') || (isDemo && hasDemoMfa)) {
+        setPendingAction(() => action);
+        setStepUpOpen(true);
+        return;
+      }
+    } catch {
+      // Proceder si no hay Supabase o MFA no activo
+    }
+    action();
+  };
 
   const defaultJan2026Groups = useMemo(() => [
     {
@@ -269,29 +289,31 @@ export default function ReconciliationDetailPage() {
       };
 
       const expectedMetadata: ReconciliationMetadata = {
-        bankPreviousBalance: 1356074.49,
-        bankCurrentBalance: 7385883.50,
-        bankTotalCredits: 21451355.82,
-        bankTotalDebits: 15421546.81,
-        ledgerInitialBalance: 84369006.58,
-        ledgerFinalBalance: 149777034.94,
-        ledgerTotalDebits: 72434688.80,
-        ledgerTotalCredits: 7026660.44,
-        companyName: 'INGENIEROS CONSULTORES Y CONSTRUCTORES ICC SAS',
-        companyNit: '901883418-1',
+        bankPreviousBalance: 0,
+        bankCurrentBalance: 124800000,
+        bankTotalCredits: 48500000,
+        bankTotalDebits: 208500,
+        ledgerInitialBalance: 0,
+        ledgerFinalBalance: 124800000,
+        ledgerTotalDebits: 48500000,
+        ledgerTotalCredits: 208500,
+        companyName: 'CAMAGUEY S.A',
+        companyNit: '890.100.026-1',
         period: 'Enero 2026',
-        ledgerAccount: '11100501 Bancolombia',
+        ledgerAccount: '11100501 Bancolombia Cta Cte',
       };
 
       if (demoRun) {
+        const compName = demoRun.reconciliation.metadata?.companyName || demoRun.reconciliation.companies?.name || 'CAMAGUEY S.A';
         const reconciliation = {
           ...demoRun.reconciliation,
           companies: {
-            name: expectedMetadata.companyName || 'INGENIEROS CONSULTORES Y CONSTRUCTORES ICC SAS',
+            name: compName,
           },
           metadata: {
             ...expectedMetadata,
             ...(demoRun.reconciliation.metadata || {}),
+            companyName: compName,
           },
           statement: {
             ...expectedStatement,
@@ -308,14 +330,20 @@ export default function ReconciliationDetailPage() {
         return;
       }
 
-      const demoRecon = DEMO_RECONCILIATIONS.find((item) => item.id === reconId);
+      const demoRecon = DEMO_RECONCILIATIONS.find((item) => item.id === reconId) || DEMO_RECONCILIATIONS[0];
+      const demoCompName = demoRecon?.metadata?.companyName || demoRecon?.companies?.name || 'CAMAGUEY S.A';
       const fullDemoRecon = demoRecon
         ? {
             ...demoRecon,
-            companies: { name: expectedMetadata.companyName || 'INGENIEROS CONSULTORES Y CONSTRUCTORES ICC SAS' },
-            metadata: expectedMetadata,
-            statement: expectedStatement,
-            groups: defaultJan2026Groups,
+            companies: { name: demoCompName },
+            metadata: {
+              ...expectedMetadata,
+              ...(demoRecon.metadata || {}),
+              companyName: demoCompName,
+              companyNit: demoRecon.metadata?.companyNit || '890.100.026-1',
+            },
+            statement: demoRecon.statement || expectedStatement,
+            groups: (demoRecon.groups && demoRecon.groups.length > 0) ? demoRecon.groups : defaultJan2026Groups,
           }
         : null;
       const fullMatches = demoRecon
@@ -738,65 +766,75 @@ export default function ReconciliationDetailPage() {
     setLinkSearchQuery('');
   };
 
-  const handleExportExcel = async () => {
-    if (!recon) return;
-    setExporting(true);
-    try {
-      const companyName = (recon as unknown as { companies: { name: string } }).companies?.name || 'Empresa';
-      exportToExcel(matches, recon, companyName, recon.groups || [], recon.statement);
-      toast.success('Reporte Excel descargado');
-    } catch {
-      toast.error('Error al exportar');
-    }
-    setExporting(false);
+  const handleExportExcel = () => {
+    requireAAL2BeforeAction(async () => {
+      if (!recon) return;
+      setExporting(true);
+      try {
+        const companyName = (recon as unknown as { companies: { name: string } }).companies?.name || 'Empresa';
+        exportToExcel(matches, recon, companyName, recon.groups || [], recon.statement);
+        toast.success('Reporte Excel descargado');
+      } catch {
+        toast.error('Error al exportar');
+      }
+      setExporting(false);
+    });
   };
 
-  const handleExportPDF = async () => {
-    if (!recon) return;
-    setExporting(true);
-    try {
-      const companyName = (recon as unknown as { companies: { name: string } }).companies?.name || 'Empresa';
-      exportToPDF(matches, recon, companyName, recon.statement, recon.groups || []);
-      toast.success('Resumen PDF descargado');
-    } catch {
-      toast.error('Error al exportar');
-    }
-    setExporting(false);
+  const handleExportPDF = () => {
+    requireAAL2BeforeAction(async () => {
+      if (!recon) return;
+      setExporting(true);
+      try {
+        const companyName = (recon as unknown as { companies: { name: string } }).companies?.name || 'Empresa';
+        exportToPDF(matches, recon, companyName, recon.statement, recon.groups || []);
+        toast.success('Resumen PDF descargado');
+      } catch {
+        toast.error('Error al exportar');
+      }
+      setExporting(false);
+    });
   };
 
-  const handleExportVouchers = async () => {
-    if (!recon) return;
-    setExporting(true);
-    try {
-      const companyName = (recon as unknown as { companies: { name: string } }).companies?.name || 'Empresa';
-      exportAccountingVouchers(matches, recon, companyName);
-      toast.success('Plantilla de asientos contables en Excel descargada');
-    } catch {
-      toast.error('Error al exportar asientos contables');
-    }
-    setExporting(false);
+  const handleExportVouchers = () => {
+    requireAAL2BeforeAction(async () => {
+      if (!recon) return;
+      setExporting(true);
+      try {
+        const companyName = (recon as unknown as { companies: { name: string } }).companies?.name || 'Empresa';
+        exportAccountingVouchers(matches, recon, companyName);
+        toast.success('Plantilla de asientos contables en Excel descargada');
+      } catch {
+        toast.error('Error al exportar asientos contables');
+      }
+      setExporting(false);
+    });
   };
 
   const handleExportSiigo = () => {
-    if (!recon) return;
-    try {
-      const companyName = (recon as unknown as { companies: { name: string } }).companies?.name || 'Empresa';
-      exportSiigoFlatFile(matches, recon, companyName);
-      toast.success('Archivo plano CSV para Siigo Nube descargado');
-    } catch {
-      toast.error('Error al generar archivo plano de Siigo Nube');
-    }
+    requireAAL2BeforeAction(() => {
+      if (!recon) return;
+      try {
+        const companyName = (recon as unknown as { companies: { name: string } }).companies?.name || 'Empresa';
+        exportSiigoFlatFile(matches, recon, companyName);
+        toast.success('Archivo plano CSV para Siigo Nube descargado');
+      } catch {
+        toast.error('Error al generar archivo plano de Siigo Nube');
+      }
+    });
   };
 
   const handleExportWorldOffice = () => {
-    if (!recon) return;
-    try {
-      const companyName = (recon as unknown as { companies: { name: string } }).companies?.name || 'Empresa';
-      exportWorldOfficeFlatFile(matches, recon, companyName);
-      toast.success('Archivo plano TXT para World Office descargado');
-    } catch {
-      toast.error('Error al generar archivo plano de World Office');
-    }
+    requireAAL2BeforeAction(() => {
+      if (!recon) return;
+      try {
+        const companyName = (recon as unknown as { companies: { name: string } }).companies?.name || 'Empresa';
+        exportWorldOfficeFlatFile(matches, recon, companyName);
+        toast.success('Archivo plano TXT para World Office descargado');
+      } catch {
+        toast.error('Error al generar archivo plano de World Office');
+      }
+    });
   };
 
   if (loading) {
@@ -1681,6 +1719,20 @@ export default function ReconciliationDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Step-Up Authentication Modal (Re-verificación TOTP antes de exportar) */}
+      <StepUpModal
+        open={stepUpOpen}
+        onOpenChange={setStepUpOpen}
+        onSuccess={() => {
+          if (pendingAction) {
+            pendingAction();
+            setPendingAction(null);
+          }
+        }}
+        title="Re-autenticación de Seguridad (Paso Elevado AAL2)"
+        description="Esta acción exporta papeles de trabajo contables sensibles. Ingresa tu código de 6 dígitos para autorizar la descarga."
+      />
     </div>
   );
 }

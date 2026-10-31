@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { ReconciliationMetadata, AccountSection } from '../types';
+import { detectHeaderRow } from './bank-header-detector';
 
 export interface ParsedFile {
   headers: string[];
@@ -260,23 +261,40 @@ export function extractMetadataFromMatrix(matrix: unknown[][]): ReconciliationMe
 export function parseSheetRows(matrix: unknown[][]): ParsedFile {
   const metadata = extractMetadataFromMatrix(matrix);
 
-  const headerRowIndex = matrix.findIndex((row, index) => {
-    if (index >= 20) return false;
-    const labels = row.map((value) => String(value ?? '').trim().toLowerCase());
-    return labels.filter((label) => HEADER_KEYWORDS.some((keyword) => label.includes(keyword))).length >= 2;
-  });
-  const detectedHeaderRow = headerRowIndex >= 0
-    ? headerRowIndex
-    : matrix.findIndex((row) => row.some((value) => String(value ?? '').trim() !== ''));
+  let detectedHeaderRow = -1;
+  let sourceHeaders: string[] = [];
+
+  // 1. Intentar detección inteligente por reglas bancarias y concurrencia (Bancolombia, Davivienda, Bogotá)
+  try {
+    const bankDetection = detectHeaderRow(matrix, 35);
+    detectedHeaderRow = bankDetection.headerRowIndex;
+    sourceHeaders = bankDetection.headers;
+    if (bankDetection.detectedBank !== 'generico' && !metadata.bankEntity) {
+      metadata.bankEntity = bankDetection.bankName;
+    }
+  } catch {
+    // 2. Fallback a método tradicional de conteo de palabras clave
+    const headerRowIndex = matrix.findIndex((row, index) => {
+      if (index >= 25) return false;
+      const labels = row.map((value) => String(value ?? '').trim().toLowerCase());
+      return labels.filter((label) => HEADER_KEYWORDS.some((keyword) => label.includes(keyword))).length >= 2;
+    });
+    detectedHeaderRow = headerRowIndex >= 0
+      ? headerRowIndex
+      : matrix.findIndex((row) => row.some((value) => String(value ?? '').trim() !== ''));
+
+    if (detectedHeaderRow >= 0) {
+      sourceHeaders = matrix[detectedHeaderRow].map((value, index) => {
+        const label = String(value ?? '').trim();
+        return label || `Columna ${index + 1}`;
+      });
+    }
+  }
 
   if (detectedHeaderRow < 0) {
     return { headers: [], rows: [], totalRows: 0, detectedHeaderRow: 0, metadata };
   }
 
-  const sourceHeaders = matrix[detectedHeaderRow].map((value, index) => {
-    const label = String(value ?? '').trim();
-    return label || `Columna ${index + 1}`;
-  });
   const headerCounts = new Map<string, number>();
   const headers = sourceHeaders.map((header) => {
     const count = (headerCounts.get(header) || 0) + 1;

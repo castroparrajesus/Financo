@@ -25,6 +25,7 @@ import {
   Filter,
   LayoutGrid,
   List,
+  Users,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import { useAuth } from '@/lib/supabase/auth-context';
@@ -53,7 +54,11 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import { Company, PLAN_LIMITS } from '@/lib/types';
 import { formatDateTime } from '@/lib/format';
-import { DEMO_COMPANIES, CAMAGUEY_COMPANY, getStoredCompanies, saveStoredCompanies } from '@/lib/demo-data';
+import {
+  DEMO_COMPANIES,
+  getDemoCompanies,
+  saveDemoCompanies,
+} from '@/lib/demo-data';
 
 interface ExtendedCompanyForm {
   name: string;
@@ -94,39 +99,49 @@ export default function CompaniesPage() {
   }, []);
 
   const loadCompanies = useCallback(async () => {
-    // 1. Almacenamiento local persistente e instantáneo
-    const local = getStoredCompanies();
-    const isRuby = user?.email?.toLowerCase().includes('ruby') || profile?.full_name?.toLowerCase().includes('ruby');
+    if (isDemo) {
+      const demoList = getDemoCompanies();
+      setCompanies(demoList);
+      setLoading(false);
+      return;
+    }
 
-    // Ordenar de forma que CAMAGUEY S.A aparezca al frente especialmente para Ruby
-    const sorted = [...local].sort((a, b) => {
-      const aIsCamaguey = a.id === CAMAGUEY_COMPANY.id || a.name.toUpperCase().includes('CAMAGUEY');
-      const bIsCamaguey = b.id === CAMAGUEY_COMPANY.id || b.name.toUpperCase().includes('CAMAGUEY');
-      if (isRuby && aIsCamaguey && !bIsCamaguey) return -1;
-      if (isRuby && !aIsCamaguey && bIsCamaguey) return 1;
-      return 0;
-    });
-
-    setCompanies(sorted);
-    setLoading(false);
-
-    if (!isDemo && isSupabaseConfigured()) {
+    // Cuenta real: cargar exclusivamente desde Supabase con RLS
+    if (isSupabaseConfigured()) {
       try {
         const { data, error } = await supabase
           .from('companies')
           .select('*')
           .order('created_at', { ascending: false });
-        if (!error && data && data.length > 0) {
+
+        if (!error && Array.isArray(data)) {
           setCompanies(data as Company[]);
+        } else {
+          setCompanies([]);
         }
       } catch (err) {
-        console.warn('Supabase no disponible, usando almacenamiento local.', err);
+        console.warn('Error al consultar Supabase:', err);
+        setCompanies([]);
+      } finally {
+        setLoading(false);
       }
+    } else {
+      setCompanies([]);
+      setLoading(false);
     }
-  }, [isDemo, isSupabaseConfigured, user, profile]);
+  }, [isDemo, isSupabaseConfigured]);
 
   useEffect(() => {
     loadCompanies();
+    const handleSync = () => {
+      loadCompanies();
+    };
+    window.addEventListener('financo_companies_updated', handleSync);
+    window.addEventListener('financo_companies_deleted', handleSync);
+    return () => {
+      window.removeEventListener('financo_companies_updated', handleSync);
+      window.removeEventListener('financo_companies_deleted', handleSync);
+    };
   }, [loadCompanies]);
 
   const planLimit = profile?.plan && PLAN_LIMITS[profile.plan] ? PLAN_LIMITS[profile.plan].companies : 20;
@@ -185,51 +200,53 @@ export default function CompaniesPage() {
 
     const assignedCity = form.city?.trim() || 'Galapa';
 
-    // Actualización local persistente e instantánea
-    let updatedCompanies: Company[];
-    if (editing) {
-      updatedCompanies = companies.map((c) =>
-        c.id === editing.id
-          ? {
-              ...c,
-              name: trimmedName,
-              nit: formattedNit,
-              contact_email: form.contact_email?.trim() || null,
-              contact_phone: form.contact_phone?.trim() || null,
-              city: assignedCity,
-              notes: fullNotes || null,
-            }
-          : c
-      );
-      toast.success(`Empresa "${trimmedName}" actualizada exitosamente`);
-    } else {
-      const newCompany: Company = {
-        id: `company-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        owner_id: user?.id || 'user-ruby-fernandez',
-        name: trimmedName,
-        nit: formattedNit,
-        contact_email: form.contact_email?.trim() || null,
-        contact_phone: form.contact_phone?.trim() || null,
-        city: assignedCity,
-        notes: fullNotes || null,
-        created_at: new Date().toISOString(),
-      };
-      updatedCompanies = [newCompany, ...companies];
-      toast.success(`¡Empresa "${trimmedName}" registrada con éxito!`);
+    if (isDemo) {
+      let updatedDemo: Company[];
+      if (editing) {
+        updatedDemo = companies.map((c) =>
+          c.id === editing.id
+            ? {
+                ...c,
+                name: trimmedName,
+                nit: formattedNit,
+                contact_email: form.contact_email?.trim() || null,
+                contact_phone: form.contact_phone?.trim() || null,
+                city: assignedCity,
+                notes: fullNotes || null,
+              }
+            : c
+        );
+        toast.success(`Empresa "${trimmedName}" actualizada exitosamente`);
+      } else {
+        const newDemoCompany: Company = {
+          id: `company-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          owner_id: 'demo-user',
+          user_id: 'demo-user',
+          name: trimmedName,
+          nit: formattedNit,
+          contact_email: form.contact_email?.trim() || null,
+          contact_phone: form.contact_phone?.trim() || null,
+          city: assignedCity,
+          notes: fullNotes || null,
+          created_at: new Date().toISOString(),
+        };
+        updatedDemo = [newDemoCompany, ...companies];
+        toast.success(`¡Empresa "${trimmedName}" registrada con éxito!`);
+      }
+
+      setCompanies(updatedDemo);
+      saveDemoCompanies(updatedDemo);
+      setOpen(false);
+      setEditing(null);
+      return;
     }
 
-    // Persistencia local inmediata y cierre de modal
-    setCompanies(updatedCompanies);
-    saveStoredCompanies(updatedCompanies);
-    setOpen(false);
-    setEditing(null);
-
-    // Sincronización en segundo plano con Supabase si está activo (no bloqueante)
-    if (!isDemo && isSupabaseConfigured()) {
+    // Cuenta Real: Persistencia directa en Supabase (100% cloud con RLS, sin localStorage)
+    if (isSupabaseConfigured()) {
       (async () => {
         try {
           if (editing) {
-            await supabase
+            const { error } = await supabase
               .from('companies')
               .update({
                 name: trimmedName,
@@ -241,38 +258,91 @@ export default function CompaniesPage() {
                 updated_at: new Date().toISOString(),
               })
               .eq('id', editing.id);
+
+            if (error) {
+              toast.error('Error al actualizar en Supabase: ' + error.message);
+              return;
+            }
+
+            setCompanies((prev) =>
+              prev.map((c) =>
+                c.id === editing.id
+                  ? {
+                      ...c,
+                      name: trimmedName,
+                      nit: formattedNit,
+                      contact_email: form.contact_email?.trim() || null,
+                      contact_phone: form.contact_phone?.trim() || null,
+                      city: assignedCity,
+                      notes: fullNotes || null,
+                    }
+                  : c
+              )
+            );
+            toast.success(`Empresa "${trimmedName}" actualizada exitosamente`);
           } else {
-            await supabase
+            const { data: newRow, error } = await supabase
               .from('companies')
               .insert({
+                user_id: user?.id,
                 name: trimmedName,
                 nit: formattedNit,
                 contact_email: form.contact_email?.trim() || null,
                 contact_phone: form.contact_phone?.trim() || null,
                 city: assignedCity,
                 notes: fullNotes || null,
-              });
+              })
+              .select()
+              .single();
+
+            if (error) {
+              toast.error('Error al registrar en Supabase: ' + error.message);
+              return;
+            }
+
+            if (newRow) {
+              setCompanies((prev) => [newRow as Company, ...prev]);
+              toast.success(`¡Empresa "${trimmedName}" registrada con éxito!`);
+            }
           }
         } catch (err) {
-          console.warn('Aviso de persistencia remota:', err);
+          console.error('Error guardando empresa en Supabase:', err);
+          toast.error('Ocurrió un error al persistir los cambios');
+        } finally {
+          setOpen(false);
+          setEditing(null);
         }
       })();
+    } else {
+      toast.error('Supabase no está configurado para la cuenta real');
+      setOpen(false);
+      setEditing(null);
     }
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!isDemo && isSupabaseConfigured()) {
-      try {
-        await supabase.from('companies').delete().eq('id', id);
-      } catch (err) {
-        console.warn('Aviso de eliminación remota:', err);
-      }
+    if (isDemo) {
+      const updated = companies.filter((c) => c.id !== id);
+      setCompanies(updated);
+      saveDemoCompanies(updated);
+      toast.success(`Empresa "${name}" eliminada de la demo`);
+      return;
     }
 
-    const updated = companies.filter((c) => c.id !== id);
-    setCompanies(updated);
-    saveStoredCompanies(updated);
-    toast.success(`Empresa "${name}" eliminada del portafolio`);
+    if (isSupabaseConfigured()) {
+      try {
+        const { error } = await supabase.from('companies').delete().eq('id', id);
+        if (error) {
+          toast.error('Error al eliminar en Supabase: ' + error.message);
+          return;
+        }
+        setCompanies((prev) => prev.filter((c) => c.id !== id));
+        toast.success(`Empresa "${name}" eliminada del portafolio permanentemente`);
+      } catch (err) {
+        console.error('Error al eliminar empresa en Supabase:', err);
+        toast.error('Error al eliminar la empresa');
+      }
+    }
   };
 
   const handleEdit = (company: Company) => {
@@ -558,6 +628,10 @@ export default function CompaniesPage() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-44 text-xs">
+                          <DropdownMenuItem onClick={() => router.push(`/dashboard/empresas/${company.id}`)}>
+                            <Users className="mr-2 h-3.5 w-3.5 text-blue-600" />
+                            Equipo y Roles
+                          </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => handleEdit(company)}>
                             <Pencil className="mr-2 h-3.5 w-3.5 text-muted-foreground" />
                             Editar datos
@@ -630,15 +704,26 @@ export default function CompaniesPage() {
                     <span>Cédula: Enero 2026 ($0 diff)</span>
                   </div>
 
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs gap-1 border-primary/30 text-primary hover:bg-primary/10 hover:text-primary"
-                    onClick={() => router.push(`/dashboard/nueva?companyId=${company.id}`)}
-                  >
-                    <span>Conciliar</span>
-                    <ArrowUpRight className="h-3 w-3" />
-                  </Button>
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs gap-1 text-muted-foreground hover:text-foreground"
+                      onClick={() => router.push(`/dashboard/empresas/${company.id}`)}
+                    >
+                      <Users className="h-3 w-3 text-blue-600" />
+                      <span>Equipo</span>
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs gap-1 border-primary/30 text-primary hover:bg-primary/10 hover:text-primary"
+                      onClick={() => router.push(`/dashboard/nueva?companyId=${company.id}`)}
+                    >
+                      <span>Conciliar</span>
+                      <ArrowUpRight className="h-3 w-3" />
+                    </Button>
+                  </div>
                 </div>
               </Card>
             );
@@ -689,6 +774,15 @@ export default function CompaniesPage() {
                     </td>
                     <td className="py-3 px-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 text-xs gap-1 text-muted-foreground hover:text-foreground"
+                          onClick={() => router.push(`/dashboard/empresas/${company.id}`)}
+                        >
+                          <Users className="h-3 w-3 text-blue-600" />
+                          <span>Equipo</span>
+                        </Button>
                         <Button
                           size="sm"
                           variant="outline"
@@ -752,7 +846,7 @@ export default function CompaniesPage() {
                     id="name"
                     value={form.name}
                     onChange={(e) => setForm({ ...form, name: e.target.value })}
-                    placeholder="Ej: INGENIEROS CONSULTORES Y CONSTRUCTORES ICC S.A.S."
+                    placeholder="Ej: CAMAGUEY S.A"
                     className="text-xs h-9"
                     autoFocus
                   />
